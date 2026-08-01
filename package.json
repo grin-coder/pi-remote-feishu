@@ -1,6 +1,6 @@
 {
   "name": "pi-remote-feishu",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Remote control Pi Agent via Feishu (飞书) chat: WebSocket bridge, cards, attachments and file sending.",
   "license": "MIT",
   "type": "module",
