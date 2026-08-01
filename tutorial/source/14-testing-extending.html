@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>14 测试与二次开发 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="14-testing-extending.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>14 测试与二次开发</h1>
+        <p>最后一章：跑测试、给项目加功能、改进建议清单、部署注意点。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>掌握项目的测试体系和开发命令</li>
+          <li>学会给项目加新命令、新工具、新卡片、新存储</li>
+          <li>知道项目已知的待改进点（可以练手的真实任务）</li>
+        </ul>
+      </div>
+
+      <h2>1. 环境与命令</h2>
+<pre><code>node &gt;= 22.19    // engines 要求
+
+npm install      // 安装依赖
+npm run typecheck // 类型检查（tsc --noEmit）
+npm test         // 跑 vitest 单元测试
+npm run build    // 编译到 dist/</code></pre>
+
+      <p>启动服务：</p>
+<pre><code>FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx node dist/bin/pi-feishu.js serve</code></pre>
+
+      <h2>2. 测试体系</h2>
+      <table>
+        <tr><th>测试</th><th>覆盖点</th><th>是否依赖飞书</th></tr>
+        <tr><td>prompt-queue.test.ts</td><td>同队列串行 / 跨队列并行</td><td>否</td></tr>
+        <tr><td>conversation-router.test.ts</td><td>私聊/群聊/群按用户/未@拒绝</td><td>否</td></tr>
+        <tr><td>message-normalizer.test.ts</td><td>命令识别、去@、prompt 拼装</td><td>否</td></tr>
+        <tr><td>card-actions.test.ts</td><td>卡片动作分发、身份恢复</td><td>否</td></tr>
+        <tr><td>attachments.test.ts</td><td>附件分类决策树</td><td>mock channel</td></tr>
+        <tr><td>send-file-to-chat.test.ts</td><td>文件校验、发送</td><td>mock channel</td></tr>
+        <tr><td>json-store.test.ts</td><td>CRUD、过滤、损坏降级、并发写</td><td>否</td></tr>
+        <tr><td>config.test.ts</td><td>配置解析合并默认值</td><td>否</td></tr>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 测试能教你的三件事</div>
+        <ol>
+          <li><strong>fixture 工厂</strong>：<code>config()</code> / <code>message()</code> 辅助函数，让每个用例只写差异</li>
+          <li><strong>行为断言而非实现断言</strong>：测「queue 顺序」而不是「queue 内部结构」</li>
+          <li><strong>可测试性来自接口</strong>：通道、存储全部接口化，mock 起来毫不费力</li>
+        </ol>
+      </div>
+
+      <h2>3. 如何给这个项目加功能</h2>
+
+      <h3>3.1 加一个新命令（以 /time 为例）</h3>
+<pre><code>// ① types.ts：FeishuCommand 的联合类型加 "time"
+// ② message-normalizer.ts：COMMANDS 集合加 "time"
+// ③ message-handler.ts：handleCommand 加分支
+if (command.name === "time") {
+  await options.channel.sendText(options.input.chatId, `当前时间：${new Date().toLocaleString()}`);
+  return true;
+}
+// ④ 需要的话在 help 卡片里加一行</code></pre>
+
+      <h3>3.2 加一个新工具（以 fetch_url 为例）</h3>
+<pre><code>// ① tools/ 下新建文件，参照 send-file-to-chat.ts
+export function createFetchUrlTool(config): ToolDefinition&lt;...&gt; {
+  return {
+    name: "fetch_url",
+    label: "Fetch URL content",
+    description: "Fetch a URL and return its text content.",
+    parameters: Type.Object({ url: Type.String() }),
+    async execute(_toolCallId, params) {
+      // 注意：如果是「发回飞书」类工具，用 getFeishuContext()
+      return { content: [{ type: "text", text: "..." }], details: undefined };
+    },
+  };
+}
+
+// ② runtime-host.ts 的 extensionFactory 里注册
+factory(pi) {
+  pi.registerTool(createSendFileToChatTool(options.config));
+  pi.registerTool(createFetchUrlTool(options.config));
+}
+// ③ extensions/index.ts 同步注册（让 TUI 会话也能用）</code></pre>
+
+      <h3>3.3 加一张新卡片</h3>
+<pre><code>// ① cards/ 下新建文件，用 common.ts 的组件拼
+export function buildXxxCard(options): JsonObject { ... }
+// ② 在命令/卡片动作里 sendCard
+// ③ 按钮 value 记得带 cmd 字段，并在 card-actions.ts 里处理</code></pre>
+
+      <h3>3.4 替换存储为 SQLite</h3>
+<pre><code>// ① store/sqlite-store.ts：实现 FeishuStore 接口
+export class SqliteFeishuStore implements FeishuStore { ... }
+// ② store.ts：把占位报错换成实现
+if (config.sessions.store === "sqlite") {
+  return new SqliteFeishuStore(config);
+}</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 注意</div>
+        <p>业务代码零改动——<strong>接口抽象的回报</strong>。这是全项目最值得亲自动手一次的实验。</p>
+      </div>
+
+      <h2>4. 改进建议清单（按性价比排序）</h2>
+
+      <h3>P0（安全/正确性）</h3>
+      <ol>
+        <li><strong>给 getHost 加创建锁</strong>：并发首次访问同一 sessionKey 时防双创建。
+<pre><code>private pendingHosts = new Map&lt;string, Promise&lt;ManagedSessionHost&gt;&gt;();
+async getHost(sessionKey, identity) {
+  const existing = this.pendingHosts.get(sessionKey);
+  if (existing) return existing;
+  const promise = this.createHost(sessionKey, identity)
+    .finally(() =&gt; this.pendingHosts.delete(sessionKey));
+  this.pendingHosts.set(sessionKey, promise);
+  return promise;
+}</code></pre></li>
+        <li><strong>Webhook transport</strong>：设计文档 Phase 5 规划的验签、URL challenge、事件解密。</li>
+        <li><strong>权限卡未点击的审计</strong>：超时后记录日志，方便追踪未响应确认。</li>
+      </ol>
+
+      <h3>P1（体验）</h3>
+      <ol start="4">
+        <li><strong>定时调用 evictIdle</strong>：加 setInterval，避免空闲会话常驻内存。</li>
+        <li><strong>卡片动作耗时操作后台化</strong>：switchSession/deleteMapping 较慢时先回 ACK 再执行。</li>
+        <li><strong>/stop 在卡片上即时反馈</strong>：abort 后更新停止卡为「已取消」。</li>
+      </ol>
+
+      <h3>P2（规模）</h3>
+      <ol start="7">
+        <li><strong>SQLite store</strong>：支持多进程/审计/大数据量。</li>
+        <li><strong>结构化日志</strong>：现在都是 console.error，生产建议用 pino 等。</li>
+        <li><strong>多租户</strong>：tenantKey 字段已预留，需要时引入 tenant router。</li>
+      </ol>
+
+      <h2>5. 部署注意点</h2>
+      <ol>
+        <li><strong>长连接进程守护</strong>：用 pm2 / systemd 守护 <code>pi-feishu serve</code>，崩溃自动拉起</li>
+        <li><strong>凭证安全</strong>：appSecret 放环境变量或用户级配置，别进版本库</li>
+        <li><strong>临时目录</strong>：确认 tempDir 可写、有清理策略</li>
+        <li><strong>白名单</strong>：生产环境建议配置 <code>allowUsers</code> / <code>allowChats</code>，把 bot 限制在受控范围</li>
+        <li><strong>日志</strong>：log-level 从 info 起排障；注意 SDK 日志不打印 appSecret</li>
+      </ol>
+
+      <h2>6. 结语：你已掌握的技能</h2>
+      <table>
+        <tr><th>维度</th><th>你已学会</th></tr>
+        <tr><td>架构</td><td>双进程、四层结构、会话隔离模型</td></tr>
+        <tr><td>实现</td><td>每个模块的代码逻辑与设计意图</td></tr>
+        <tr><td>权衡</td><td>13 个关键决策及理由</td></tr>
+        <tr><td>扩展</td><td>如何加命令、加工具、换存储</td></tr>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">🎓 毕业实践（选做）</div>
+        <ol>
+          <li>实现「定时调用 evictIdle」（P1-4），并写一个测试验证空闲回收。</li>
+          <li>给 <code>getHost</code> 加创建锁（P0-1），并解释为什么能修好竞态。</li>
+          <li>新增一个 <code>/clear</code> 命令：清除当前会话上下文但保留映射（提示：参考 /new 的实现）。</li>
+        </ol>
+      </div>
+
+      <p class="index-footer">第二部分完。至此你已完整读过 pi-feishu 的架构与源码。祝你讲得明白、改得开心 🎉</p>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

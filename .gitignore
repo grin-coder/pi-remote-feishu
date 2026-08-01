@@ -1,0 +1,20 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# 日志
+logs/
+*.log
+
+# npm 打包产物
+*.tgz
+
+# 本地临时脚本（开发调试用）
+list-members-tmp.mjs
+make-demo-png.cjs
+
+# 系统文件
+.DS_Store
+Thumbs.db

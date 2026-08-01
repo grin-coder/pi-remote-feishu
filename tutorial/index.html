@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pi-feishu 源码教程 · 从零读懂 Pi Agent × 飞书扩展</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="index-hero">
+        <span class="logo">TUTORIAL</span>
+        <h1>pi-feishu 源码教程</h1>
+        <p class="subtitle">
+          从零读懂 <strong>Pi Agent × 飞书</strong> 扩展包的完整实现：
+          多会话隔离架构、双入口设计、流式渲染、远程权限确认、文件回传。
+          跟着项目源码一步步拆解。
+        </p>
+        <div class="index-stats">
+          <div><b>3</b> 大部分</div>
+          <div><b>24</b> 章</div>
+          <div><b>~2800</b> 行源码</div>
+          <div><b>20</b> 主线问答</div>
+        </div>
+        <div class="cta">
+          <a class="btn btn-primary" href="architecture/00-guide.html">开始学习 →</a>
+          <a class="btn btn-ghost" href="source/01-source-map.html">直接看源码解读</a>
+          <a class="btn btn-accent" href="interview/01-qa.html">面试准备</a>
+        </div>
+      </header>
+
+      <div class="part-cards">
+        <a class="part-card" href="architecture/00-guide.html">
+          <span class="p-tag">第一部分</span>
+          <h2>架构设计</h2>
+          <p class="p-intro">先建立全局认知：这个项目解决什么问题、系统如何分层、核心概念是什么、一条消息如何走完全程、以及最重要的设计取舍。</p>
+          <ul class="chapter-list">
+            <li><span class="cnum">00</span><span class="ctitle">教程导读</span></li>
+            <li><span class="cnum">01</span><span class="ctitle">项目概览</span></li>
+            <li><span class="cnum">02</span><span class="ctitle">总体架构</span></li>
+            <li><span class="cnum">03</span><span class="ctitle">核心概念</span></li>
+            <li><span class="cnum">04</span><span class="ctitle">消息处理全链路</span></li>
+            <li><span class="cnum">05</span><span class="ctitle">关键设计决策</span></li>
+          </ul>
+        </a>
+
+        <a class="part-card" href="source/01-source-map.html">
+          <span class="p-tag">第二部分</span>
+          <h2>源码解读</h2>
+          <p class="p-intro">按模块精读源码实现：从配置系统到飞书通道、从会话管理到流式渲染，每个文件讲清楚「写什么、为什么这么写」。</p>
+          <ul class="chapter-list">
+            <li><span class="cnum">01</span><span class="ctitle">源码地图</span></li>
+            <li><span class="cnum">02</span><span class="ctitle">配置系统</span></li>
+            <li><span class="cnum">03</span><span class="ctitle">通道层 feishu/</span></li>
+            <li><span class="cnum">04</span><span class="ctitle">路由与归一化</span></li>
+            <li><span class="cnum">05</span><span class="ctitle">会话管理</span></li>
+            <li><span class="cnum">06</span><span class="ctitle">运行时封装</span></li>
+            <li><span class="cnum">07</span><span class="ctitle">流式渲染</span></li>
+            <li><span class="cnum">08</span><span class="ctitle">UI 桥接与权限确认</span></li>
+            <li><span class="cnum">09</span><span class="ctitle">卡片系统</span></li>
+            <li><span class="cnum">10</span><span class="ctitle">附件处理</span></li>
+            <li><span class="cnum">11</span><span class="ctitle">文件回传工具</span></li>
+            <li><span class="cnum">12</span><span class="ctitle">存储</span></li>
+            <li><span class="cnum">13</span><span class="ctitle">入口与扩展</span></li>
+            <li><span class="cnum">14</span><span class="ctitle">测试与二次开发</span></li>
+          </ul>
+        </a>
+
+        <a class="part-card" href="interview/01-qa.html">
+          <span class="p-tag">第三部分</span>
+          <h2>面试准备</h2>
+          <p class="p-intro">从源码细节收束到系统设计表达：主线问答、架构亮点、可演示改造题和面试速查卡。</p>
+          <ul class="chapter-list">
+            <li><span class="cnum">01</span><span class="ctitle">面试主线问答</span></li>
+            <li><span class="cnum">02</span><span class="ctitle">架构亮点与设计模式</span></li>
+            <li><span class="cnum">03</span><span class="ctitle">面试可演示改造题</span></li>
+            <li><span class="cnum">04</span><span class="ctitle">面试速查卡</span></li>
+          </ul>
+        </a>
+      </div>
+
+      <div class="how-to-read">
+        <h3>📖 如何使用本教程</h3>
+        <ol>
+          <li>克隆项目后，先用 <strong>第一部分</strong> 建立整体认知（不读代码也能懂）。</li>
+          <li>读第二部分时，<strong>一边看讲解、一边在编辑器里打开对应源码文件</strong>，效果最好。</li>
+          <li>如果你想面试或深入掌握，<strong>第三部分</strong> 帮你把源码细节整理成架构表达、设计取舍和可演示改造题。</li>
+          <li>每章末尾有「小结」和「练习」，练习答案都可以在源码里找到。</li>
+          <li>右上角侧边栏可随时跳转章节；页面底部有「上一章 / 下一章」。</li>
+        </ol>
+      </div>
+
+      <p class="index-footer">pi-feishu 源码教程 · 纯原生 HTML 构建，GitHub 可直接预览 · MIT</p>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="assets/nav.js"></script>
+<script src="assets/main.js"></script>
+</body>
+</html>

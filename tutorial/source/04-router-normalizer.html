@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>04 路由与归一化 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="04-router-normalizer.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>04 路由与归一化</h1>
+        <p>「这条消息该不该接受？」「该进哪个会话？」「怎么变成 Pi 能懂的东西？」</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>掌握策略检查链与「可判别联合」结果类型</li>
+          <li>理解群聊 prompt 的结构化注入</li>
+          <li>学会用测试驱动的方式理解纯函数模块</li>
+        </ul>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p><span class="file-path">src/bridge/conversation-router.ts</span>（49 行）<br>
+        <span class="file-path">src/bridge/message-normalizer.ts</span>（75 行）</p>
+      </div>
+
+      <h2>1. 路由（conversation-router）</h2>
+
+      <h3>1.1 策略检查链</h3>
+<pre><code>export function routeConversation(config: FeishuConfig, message: FeishuMessage): ConversationRouteResult {
+  if (message.chatType === "private" && !config.policy.dmEnabled) {
+    return { accepted: false, reason: "Private chats are disabled" };
+  }
+  if (message.chatType === "group" && !config.policy.groupEnabled) {
+    return { accepted: false, reason: "Group chats are disabled" };
+  }
+  if (message.chatType === "group" && config.policy.requireMention && !message.mentionedBot) {
+    return { accepted: false, reason: "Bot was not mentioned" };
+  }
+  if (!contains(config.policy.allowUsers, message.userOpenId)) {
+    return { accepted: false, reason: "User is not allowed" };
+  }
+  if (!contains(config.policy.allowChats, message.chatId)) {
+    return { accepted: false, reason: "Chat is not allowed" };
+  }
+  ...
+}</code></pre>
+
+      <p>检查顺序：<strong>开关 → @ 校验 → 白名单</strong>。注意 <code>contains</code> 的语义：</p>
+<pre><code>function contains(list: readonly string[] | undefined, value: string): boolean {
+  return list === undefined || list.includes(value);
+}</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 默认开放、按需收紧</div>
+        <p>白名单未配置 = 允许所有人。这是「默认开放、按需收紧」的安全模型。
+        生产环境建议配置白名单把 bot 限制在受控范围（部署篇会再提）。</p>
+      </div>
+
+      <h3>1.2 结果类型：用 union 表达「成或败」</h3>
+<pre><code>export type ConversationRouteResult =
+  | { accepted: true; sessionKey: string; identity: FeishuIdentity }
+  | { accepted: false; reason: string };</code></pre>
+
+      <p>TypeScript 的<strong>可判别联合</strong>（discriminated union）——<code>accepted</code> 字段就是判别标志。调用方只需：</p>
+<pre><code>if (!route.accepted) { /* 拒绝分支 */ }
+// 此处 TypeScript 自动收窄：route 只剩 accepted: true 的形状</code></pre>
+
+      <p>这种写法避免了「返回 undefined 表示失败」的隐晦，也避免了「返回对象 + 错误码」的啰嗦。<strong>推荐在结果可能成/败的 API 里使用。</strong></p>
+
+      <h3>1.3 buildSessionKey</h3>
+<pre><code>export function buildSessionKey(config: FeishuConfig, identity: FeishuIdentity): string {
+  if (identity.chatType === "private") return `dm:${identity.userOpenId}`;
+  if (config.sessions.groupScope === "per-user") return `group-user:${identity.chatId}:${identity.userOpenId}`;
+  return `group:${identity.chatId}`;
+}</code></pre>
+
+      <h2>2. 归一化（message-normalizer）</h2>
+
+      <h3>2.1 命令识别</h3>
+<pre><code>const COMMANDS = new Set(["help", "sessions", "models", "new", "stop", "reset", "status"]);
+
+function parseCommand(text: string): FeishuCommand | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/")) return undefined;
+  const withoutSlash = trimmed.slice(1);
+  const [name = "", ...rest] = withoutSlash.split(/\s+/);
+  if (!COMMANDS.has(name)) return undefined;
+  return { name: name as FeishuCommand["name"], args: rest.join(" ") };
+}</code></pre>
+
+      <ul>
+        <li>以 <code>/</code> 开头才尝试解析</li>
+        <li>不在集合里的命令返回 <code>undefined</code> → 视为普通消息（<strong>未知命令不转发</strong>）</li>
+        <li>命令带参数：<code>/models high</code> 的 <code>high</code> 会进 <code>args</code></li>
+      </ul>
+
+      <h3>2.2 去 @ 前缀</h3>
+<pre><code>function stripBotMention(text: string): string {
+  return text.replace(/^@\S+\s*/, "").trim();
+}</code></pre>
+
+      <p>群聊里用户的消息通常是 <code>@机器人 帮我看下...</code>，<strong>@ 前缀必须剥掉</strong>，否则会污染 prompt。</p>
+
+      <h3>2.3 拼装 prompt（核心教学点）</h3>
+<pre><code>const text = options.message.chatType === "group"
+  ? stripBotMention(options.message.text)
+  : options.message.text.trim();
+
+const promptTextParts: string[] = [];
+
+if (text.length &gt; 0) {
+  if (options.message.chatType === "group") {
+    const sender = options.message.senderName ?? options.message.userOpenId;
+    const groupMode = options.route.sessionKey.startsWith("group-user:")
+      ? "per-user session" : "shared chat session";
+    promptTextParts.push(
+      [
+        "[Feishu group message]",
+        `Sender: ${sender}`,
+        `Session mode: ${groupMode}`,
+        "Reply naturally to the sender in the group. Keep the answer concise unless the user asks for detail.",
+        "Message:",
+        text,
+      ].join("\n"),
+    );
+  } else {
+    promptTextParts.push(text);
+  }
+}
+if (attachmentNotes.length &gt; 0) {
+  promptTextParts.push(attachmentNotes.join("\n"));
+}
+
+const normalized: NormalizedPiInput = {
+  ...
+  text: promptTextParts.join("\n\n"),   // 用空行分隔各部分
+  ...
+};</code></pre>
+
+      <p>几个值得学的点：</p>
+      <ol>
+        <li><strong>群聊消息是「结构化注入」</strong>，不是直接透传。飞书侧元信息（发送者、会话模式）被打包成固定格式，模型拿到的是结构清晰、可理解的上下文。</li>
+        <li><strong>还给模型行为指令</strong>："Reply naturally... Keep the answer concise"——这是 prompt 工程，让群聊回答更符合场景。</li>
+        <li><strong>附件说明拼接</strong>：附件处理产出的 <code>attachmentNotes</code> 追加在用户文本后面。</li>
+        <li><strong>各部分用 <code>\n\n</code> 连接</strong>，给模型清晰的段落边界。</li>
+      </ol>
+
+      <h2>3. 测试对照</h2>
+      <p><code>test/conversation-router.test.ts</code> 验证了路由的 4 种典型场景：</p>
+      <table>
+        <tr><th>场景</th><th>期望</th></tr>
+        <tr><td>私聊</td><td><code>dm:alice</code></td></tr>
+        <tr><td>群聊（默认 shared）</td><td><code>group:chat-1</code></td></tr>
+        <tr><td>群聊（per-user 配置）</td><td><code>group-user:chat-1:alice</code></td></tr>
+        <tr><td>群聊未 @</td><td>拒绝 <code>Bot was not mentioned</code></td></tr>
+      </table>
+
+      <p>测试里构造了完整的 <code>FeishuConfig</code> 和 <code>FeishuMessage</code> fixture——
+      <strong>这也是很好的测试写法</strong>：辅助函数 <code>config()</code> / <code>message()</code> 让每个用例只写差异部分。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <table>
+          <tr><th>步骤</th><th>输入 → 输出</th><th>关键点</th></tr>
+          <tr><td>路由</td><td>消息 → sessionKey 或拒绝原因</td><td>可判别联合、默认开放白名单、@ 校验</td></tr>
+          <tr><td>归一化</td><td>消息+路由 → Pi 输入</td><td>去 @、命令识别、群聊结构化 prompt</td></tr>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>如果用户私聊发了一条 <code>/unknown-cmd</code>，它会被当成命令还是普通消息发给模型？为什么？</li>
+          <li>试着自己写一个 <code>message()`</code> 辅助函数，构造一条「群聊 + 附件 + @机器人」的消息，预测 normalizeMessage 的输出。</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

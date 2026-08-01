@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>02 总体架构 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="architecture" data-chapter="02-architecture.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第一部分 · 架构设计</span>
+        <h1>02 总体架构</h1>
+        <p>系统如何分层？两个进程分别怎么启动？核心数据结构长什么样？</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>看懂整张架构总览图，知道每个模块在系统中的位置</li>
+          <li>理解四层依赖模型和「组合根」的启动方式</li>
+          <li>认识 4 个核心数据结构（FeishuChannel / FeishuMessage / NormalizedPiInput / SessionHost）</li>
+        </ul>
+      </div>
+
+      <h2>1. 架构总览图</h2>
+<pre><code>┌─────────────────────────────── 飞书侧 ───────────────────────────────┐
+│  用户发消息 / 点卡片按钮                                                │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   ▼
+┌───────────────────── Transport Host 进程（pi-feishu serve）──────────┐
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ src/feishu/channel.ts                                         │  │
+│  │   createFeishuChannel() 封装飞书 SDK                            │  │
+│  │   onMessage / onCardAction 回调，收发卡片/文件                   │  │
+│  └───────────────────────────┬────────────────────────────────────┘  │
+│                              ▼                                       │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ src/bridge/message-handler.ts   ← 消息主流程                    │  │
+│  │  ① routeConversation    策略/@校验 → sessionKey                 │  │
+│  │  ② getHost              拿/建 SessionHost                       │  │
+│  │  ③ processAttachments   附件处理                                │  │
+│  │  ④ normalizeMessage     归一化为 Pi 输入                        │  │
+│  │  ⑤ handleCommand        是命令就走命令分支                       │  │
+│  │  ⑥ queue.enqueue        入队，串行执行                          │  │
+│  └───────────────────────────┬────────────────────────────────────┘  │
+│                              ▼                                       │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ SessionHost（每会话一个）                                       │  │
+│  │  ├─ runtime: AgentSessionRuntime  ← Pi SDK 运行时              │  │
+│  │  ├─ queue: PromptQueue            ← 串行队列                    │  │
+│  │  ├─ activeRun                     ← 当前活跃任务                │  │
+│  │  └─ runtimeHost: RuntimeHost      ← runtime 封装                │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                              │                                       │
+│                              ▼                                       │
+│  Pi SDK: runtime.session.prompt()  → 事件流                          │
+│                              │                                       │
+│                              ▼                                       │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ stream-renderer.ts  事件流 → 飞书流式 markdown                   │  │
+│  │ ui-context.ts       权限确认 → 飞书确认卡片                       │  │
+│  │ send-file-to-chat.ts 模型生成文件 → 发回飞书                     │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   ▼
+┌─────────────────────── Pi Extension（被 Pi 加载）────────────────────┐
+│  src/extensions/index.ts                                            │
+│  ├─ registerCommand("feishu")  TUI 内查看状态                       │
+│  └─ registerTool(send_file_to_chat)  模型可调用发文件               │
+└──────────────────────────────────────────────────────────────────────┘</code></pre>
+
+      <h2>2. 四层依赖模型</h2>
+      <p>整个系统按「谁依赖谁」分成四层。这个分层是理解代码组织方式的关键：</p>
+
+<pre><code>┌─ Layer 4: 应用层（组合一切）
+│    bin/pi-feishu.ts          把 config/channel/store/manager 组装起来
+│    extensions/index.ts       把工具注册给 Pi
+├─ Layer 3: 桥接层 bridge/ ★ 核心
+│    message-handler 编排 / conversation-router / message-normalizer
+│    session-host-manager / runtime-host / prompt-queue
+│    stream-renderer / ui-context / card-actions
+├─ Layer 2: 基础设施
+│    feishu/channel.ts（外部通信）  cards/（展示）
+│    attachments/（输入预处理）     store/（持久化）  tools/（Pi 工具）
+├─ Layer 1: 类型契约
+│    types.ts（所有共享类型，全项目的地基）
+└─ 外部依赖：Pi SDK / 飞书 SDK / TypeBox</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 依赖规则</div>
+        <p><strong>上层依赖下层，下层绝不反向依赖上层。</strong>
+        比如 <code>cards/</code> 只依赖 <code>types.ts</code>，不知道 <code>bridge/</code> 的存在；
+        <code>feishu/channel.ts</code> 只暴露 <code>FeishuChannel</code> <strong>接口</strong>，调用方拿到的是接口而不是具体类。
+        这条规则保证了模块可替换、可测试。</p>
+      </div>
+
+      <h2>3. 两个进程的启动路径</h2>
+
+      <h3>3.1 Transport Host 启动（src/bin/pi-feishu.ts）</h3>
+<pre><code>async function main() {
+  const cli = parseArgs(process.argv.slice(2));        // ① 解析 CLI 参数
+  const config = loadConfig(cli.config);               // ② 合并配置（env &lt; 文件 &lt; CLI）
+  const channel = createFeishuChannel({...});          // ③ 创建飞书通道
+  const store = createStore(config);                   // ④ 创建存储
+  const manager = new SessionHostManager({...});       // ⑤ 创建会话管理器
+
+  channel.onMessage((message) => {                     // ⑥ 注册消息回调
+    handleFeishuMessage({ config, channel, store, manager, message });
+  });
+  channel.onCardAction((event) => {                    // ⑦ 注册卡片按钮回调
+    handleCardAction({...});
+  });
+  channel.onError((error) =&gt; console.error(error.message));
+
+  await channel.connect();                             // ⑧ 连接飞书 WebSocket
+  await new Promise((resolve) =&gt; {                     // ⑨ 挂起等待退出信号
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
+}</code></pre>
+
+      <p>这段代码就是<strong>组合根（Composition Root）</strong>：
+      config / channel / store / manager 都是在这里创建、在这里注入，模块之间不互相 new。</p>
+
+      <div class="callout note">
+        <div class="callout-title">📌 两个细节</div>
+        <ol>
+          <li><code>channel.connect()</code> 前的所有回调都已注册——WebSocket 一旦连上消息可能立刻涌来，回调必须先就位。</li>
+          <li>进程最后挂在一个 <code>Promise</code> 上，只有收到 SIGINT/SIGTERM 才会 <code>disconnect</code> 并退出。这就是「长连接进程」的典型写法。</li>
+        </ol>
+      </div>
+
+      <h3>3.2 Pi Extension 加载（src/extensions/index.ts）</h3>
+<pre><code>export default function feishuExtension(pi: ExtensionAPI): void {
+  pi.registerCommand("feishu", {...});                 // TUI 内 /feishu 命令
+  try {
+    const config = loadConfig();                       // 尝试读配置
+    pi.registerTool(createSendFileToChatTool(config)); // 注册发文件工具
+  } catch {
+    // 配置缺失时优雅降级：等 agent 启动后提示一次
+    pi.on("agent_start", (_event, ctx) =&gt; {
+      ctx.ui.notify("Feishu config not found; send_file_to_chat is not registered.", "warning");
+    });
+  }
+}</code></pre>
+
+      <p>要点：<strong>这个文件不碰飞书连接</strong>。它只是「如果配置存在，就把工具注册给 Pi」。
+      配置缺失不崩溃，而是降级提示。<code>package.json</code> 中的 <code>"pi": { "extensions": [...] }</code> 告诉 Pi 包管理器加载它。</p>
+
+      <h2>4. 核心数据结构（地基）</h2>
+      <p>所有类型定义在 <code>src/types.ts</code>。理解架构前，先认识这四个：</p>
+
+      <h3>4.1 FeishuChannel —— 通道抽象（接口）</h3>
+<pre><code>interface FeishuChannel {
+  connect(): Promise&lt;void&gt;;
+  onMessage(handler: (message: FeishuMessage) =&gt; void): void;
+  onCardAction(handler: (event: FeishuCardAction) =&gt; void): void;
+  sendText / sendMarkdown / sendCard(chatId, content): Promise&lt;SendResult&gt;;
+  streamMarkdown(chatId, producer): Promise&lt;void&gt;;   // 流式
+  updateCard / updateCardByToken(messageId|token, card): Promise&lt;void&gt;;
+  sendFile / sendImage(chatId, filePath): Promise&lt;void&gt;;
+  downloadResource(messageId, fileKey, type): Promise&lt;Buffer&gt;;
+}</code></pre>
+      <p>为什么定义成接口而不是类？——<strong>上层只依赖接口</strong>，测试时可以轻松 mock 通道。</p>
+
+      <h3>4.2 FeishuMessage —— 归一化后的消息</h3>
+<pre><code>interface FeishuMessage {
+  messageId: string;
+  chatId: string;
+  chatType: "private" | "group";
+  userOpenId: string;
+  senderName?: string;
+  tenantKey?: string;
+  text: string;
+  mentionedBot: boolean;      // 是否 @ 了机器人（群聊策略要用）
+  resources: FeishuResource[];// 附件（图片/文件等）
+  raw: unknown;               // 保留原始数据，方便排查
+}</code></pre>
+
+      <h3>4.3 NormalizedPiInput —— 给 Pi 的输入</h3>
+<pre><code>interface NormalizedPiInput {
+  sessionKey: string;
+  chatId: string;
+  messageId: string;
+  userId: string;
+  chatType: ChatType;
+  text: string;               // 拼好上下文的 prompt 文本
+  images: ImageInput[];       // base64 图片
+  attachmentNotes: string[];  // 附件说明
+  command?: FeishuCommand;    // /help /stop 等
+}</code></pre>
+
+      <h3>4.4 SessionHost —— 每会话隔离单元</h3>
+<pre><code>interface SessionHost {
+  sessionKey: string;
+  runtime: AgentSessionRuntime;  // Pi 运行时
+  queue: PromptQueueLike;        // 串行队列
+  activeRun?: ActiveRun;         // 当前正在跑的任务（可 abort）
+  lastUsedAt: Date;              // 用于空闲回收
+}</code></pre>
+
+      <h2>5. 消息流全景（一分钟版）</h2>
+<pre><code>飞书用户
+  └─► channel.onMessage
+       └─► handleFeishuMessage
+            ├─► routeConversation       判定策略 → sessionKey
+            ├─► manager.getHost         拿/建 SessionHost（含 runtime）
+            ├─► processAttachments      附件 → 图片/文本/临时文件
+            ├─► normalizeMessage        拼成 Pi 输入
+            ├─► handleCommand?          是命令 → 卡片回复，结束
+            └─► host.queue.enqueue
+                 ├─► 发「Pi 正在处理」停止卡
+                 ├─► runtimeHost.prompt → session.prompt(text)
+                 │    ├─► stream-renderer  事件 → 流式文本
+                 │    └─► ui-context       权限确认 → 卡片 → 等按钮
+                 ├─► 更新停止卡为完成/失败
+                 └─► 清理临时文件、释放 activeRun</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <ul>
+          <li>四层依赖：types → 基础设施 → bridge → 应用层，下层不依赖上层</li>
+          <li>组合根在 bin：所有依赖注入，无全局可变状态（除了 AsyncLocalStorage）</li>
+          <li>双进程：transport 长连接 + Pi 扩展能力，各自独立</li>
+          <li>四个核心类型：FeishuChannel / FeishuMessage / NormalizedPiInput / SessionHost</li>
+        </ul>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>打开 <code>src/types.ts</code>，找找有没有第 5 个「隐藏的核心类型」？提示：它是工具和权限确认都依赖的东西。</li>
+          <li>在 <code>src/bin/pi-feishu.ts</code> 里，如果把 <code>channel.onMessage</code> 移到 <code>channel.connect()</code> 之后会发生什么？为什么作者先注册回调？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

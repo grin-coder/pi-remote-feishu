@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>11 文件回传工具 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="11-send-file-tool.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>11 文件回传工具（send_file_to_chat）</h1>
+        <p>注册给模型的工具：生成文件后主动发回飞书——三层安全防线 + AsyncLocalStorage 实战。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>理解工具的三层安全校验（白名单/类型/大小）</li>
+          <li>理解工具如何通过 AsyncLocalStorage 拿到「当前在哪个 chat」</li>
+          <li>理解工具的双注册点：transport 进程 + Pi 本体</li>
+        </ul>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p><span class="file-path">src/tools/send-file-to-chat.ts</span>（70 行）</p>
+      </div>
+
+      <h2>1. 角色定位</h2>
+      <p>这是一个<strong>注册给 Pi 模型调用的工具</strong>：当模型生成了文件（报告、代码、图片……），
+      它可以主动调用 <code>send_file_to_chat</code> 把文件发回当前飞书聊天。</p>
+
+<pre><code>模型生成文件 /tmp/report.md
+  └─► 调用 send_file_to_chat({ filePath: "/tmp/report.md", fileName: "报告.md" })
+        ├─► 校验路径在允许目录内
+        ├─► 校验是文件、大小不超限
+        ├─► 从 FeishuContext 拿到 channel + chatId
+        ├─► channel.sendFile(chatId, path, name)
+        └─► 返回标准 tool result</code></pre>
+
+      <h2>2. 参数 Schema（TypeBox）</h2>
+<pre><code>const sendFileSchema = Type.Object({
+  filePath: Type.String({ description: "Local file path to send to the current Feishu chat" }),
+  fileName: Type.Optional(Type.String({ description: "Display file name in Feishu" })),
+});</code></pre>
+
+      <p>用 TypeBox 定义参数 schema，Pi 会把 schema 描述给模型，并校验模型传参。<code>Type.Optional</code> 让 fileName 可选。</p>
+
+      <h2>3. 安全校验（validateFile）—— 三层防线</h2>
+<pre><code>async function validateFile(filePath: string, config: FeishuConfig): Promise&lt;string&gt; {
+  const resolvedPath = resolve(filePath);
+  // ① 路径必须在允许的输出目录内
+  if (!config.files.allowedOutputDirs.some((dir) =&gt; isUnderPath(resolvedPath, dir))) {
+    throw new Error("File is outside allowed output directories");
+  }
+  // ② 必须是文件（不能是目录）
+  const statResult = await stat(resolvedPath);
+  if (!statResult.isFile()) {
+    throw new Error("Path is not a file");
+  }
+  // ③ 大小限制
+  if (statResult.size &gt; config.files.maxUploadBytes) {
+    throw new Error(`File exceeds upload limit (${config.files.maxUploadBytes} bytes)`);
+  }
+  return resolvedPath;
+}</code></pre>
+
+      <h3>isUnderPath：防目录穿越</h3>
+<pre><code>function isUnderPath(target: string, root: string): boolean {
+  const resolvedTarget = resolve(target);
+  const resolvedRoot = resolve(root);
+  const relativePath = relative(resolvedRoot, resolvedTarget);
+  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+}</code></pre>
+
+      <p><strong>判断原理</strong>：<code>path.relative(root, target)</code> 如果返回 <code>..</code> 开头，说明 target 在 root 外面。
+      特殊处理 <code>relativePath === ""</code>（target 就是 root 本身）。</p>
+
+      <div class="callout danger">
+        <div class="callout-title">⚠️ 为什么「模型输入」也要校验？</div>
+        <p><strong>模型输入被当作不可信输入对待。</strong>模型也可能被骗、出错、或产生恶意输出。
+        三道防线：路径白名单（防止读系统文件）→ 类型校验（必须是文件）→ 大小限制（防止上传超大文件）。</p>
+      </div>
+
+      <h2>4. 上下文读取（核心设计）</h2>
+<pre><code>async execute(_toolCallId, params) {
+  const context = getFeishuContext();   // ← AsyncLocalStorage 魔法
+  if (!context) {
+    return { content: [{ type: "text", text: "Not currently handling a Feishu request; cannot send file." }], details: undefined };
+  }
+  ...
+}</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 工具不知道自己在哪个 chat——上下文告诉它</div>
+        <ul>
+          <li>在飞书请求期间调用（<code>runWithFeishuContext</code> 包裹的 prompt 内）→ 拿到 <code>{ channel, chatId }</code></li>
+          <li>在 TUI/其他场景调用（无飞书上下文）→ 优雅返回失败说明</li>
+        </ul>
+        <p>这个设计的巧妙之处：<strong>工具函数本身不依赖任何全局状态</strong>，
+        只依赖异步上下文，因此可以在任何 runtime 里安全注册（TUI 会话、飞书会话都能用同一个工具定义）。</p>
+      </div>
+
+      <h2>5. 发送与结果</h2>
+<pre><code>try {
+  const filePath = await validateFile(params.filePath, config);
+  await context.channel.sendFile(context.chatId, filePath, params.fileName ?? basename(filePath));
+  return {
+    content: [{ type: "text", text: `Sent file to Feishu: ${params.fileName ?? basename(filePath)}` }],
+    details: undefined,
+  };
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    content: [{ type: "text", text: `Failed to send file to Feishu: ${message}` }],
+    details: undefined,
+  };
+}</code></pre>
+
+      <ul>
+        <li>失败也返回<strong>标准 tool result</strong>（不抛异常），让模型知道自己哪里错了可以重试</li>
+        <li>结果文本里带文件显示名，模型可以转述给用户</li>
+      </ul>
+
+      <h2>6. 两个注册点（双通道）</h2>
+      <p>这个工具在<strong>两处</strong>注册：</p>
+      <table>
+        <tr><th>注册点</th><th>位置</th><th>场景</th></tr>
+        <tr><td>RuntimeHost 创建时</td><td>runtime-host.ts extensionFactory</td><td>飞书 transport 进程内，每个会话的 runtime 都有</td></tr>
+        <tr><td>Pi Extension 入口</td><td>extensions/index.ts</td><td>Pi 本体（TUI 会话）也有，配置存在时注册</td></tr>
+      </table>
+      <p>两个入口殊途同归：工具定义相同，行为相同（TUI 下调用会返回「不在飞书请求中」）。</p>
+
+      <h2>7. Prompt 指引（promptGuidelines）</h2>
+<pre><code>promptGuidelines: [
+  "When you create a deliverable file for a Feishu user, call send_file_to_chat with the final local file path.",
+  "Only send files that already exist and are relevant to the user's request.",
+],</code></pre>
+
+      <p>工具定义里带<strong>行为指引</strong>，Pi 会把它注入模型上下文——
+      告诉模型「什么时候该主动发文件」「什么不该发」。这是让模型行为符合预期的低成本手段。</p>
+
+      <h2>8. 测试对照</h2>
+      <p><code>test/send-file-to-chat.test.ts</code> 用 mock channel 验证：</p>
+      <ul>
+        <li>校验通过 → 调用 <code>sendFile</code> 一次，返回成功</li>
+        <li>路径越权 → 不调用 sendFile，返回失败</li>
+      </ul>
+      <p>因为工具只依赖 <code>FeishuChannel</code> 接口和 config，<strong>测试可以完全脱离飞书</strong>——这就是接口抽象的回报。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <table>
+          <tr><th>环节</th><th>实现</th><th>教学点</th></tr>
+          <tr><td>参数</td><td>TypeBox schema</td><td>模型参数契约</td></tr>
+          <tr><td>校验</td><td>白名单 + 类型 + 大小</td><td>模型输入不可信，三道防线</td></tr>
+          <tr><td>上下文</td><td>getFeishuContext</td><td>工具无全局状态，依赖异步上下文</td></tr>
+          <tr><td>结果</td><td>标准 tool result（含失败）</td><td>失败让模型可感知可重试</td></tr>
+          <tr><td>指引</td><td>promptGuidelines</td><td>低成本的模型行为塑造</td></tr>
+          <tr><td>注册</td><td>双通道</td><td>transport 与 Pi 本体都能用</td></tr>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>如果把 <code>isUnderPath</code> 里的 <code>relativePath === ""</code> 分支删掉，会发生什么？（提示：target 恰好等于 root）</li>
+          <li>为什么工具失败时返回 result 而不是 <code>throw</code>？<code>throw</code> 会给模型带来什么体验差异？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

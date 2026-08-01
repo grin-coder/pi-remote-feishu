@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 项目概览 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="architecture" data-chapter="01-overview.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第一部分 · 架构设计</span>
+        <h1>01 项目概览</h1>
+        <p>这个项目是什么？它解决了一个什么样的核心问题？源码目录长什么样？</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>能用一句话说清这个项目是干什么的</li>
+          <li>理解核心难题：Pi 的单会话模型 vs 飞书的多用户并发</li>
+          <li>认识源码目录结构和依赖技术栈</li>
+        </ul>
+      </div>
+
+      <h2>1. 这个项目是什么</h2>
+      <p><strong>一句话定义：</strong>把飞书变成 Pi Agent 的「远程终端」——
+      用户在飞书私聊/群聊里发消息，Pi 在服务器上干活，把思考过程、工具调用、生成的文件全部投射回飞书。</p>
+
+<pre><code>┌─────────────────┐        ┌───────────────────────┐        ┌──────────────┐
+│  飞书 App       │  ◄────► │  pi-feishu 服务进程    │  ◄────► │  Pi Agent    │
+│  (私聊/群聊)     │  WebSocket│ (transport host)      │   SDK   │  (runtime)   │
+└─────────────────┘        └───────────────────────┘        └──────────────┘</code></pre>
+
+      <p>它不是一个独立聊天机器人，而是 <strong>Pi 的一个 transport（传输通道）扩展包</strong>。
+      注意关键词：<strong>扩展包</strong>——它不改 Pi 核心代码，只通过 SDK 公开 API 接入。</p>
+
+      <h2>2. 它解决的核心问题（本章最重要）</h2>
+      <p>Pi Agent 的设计目标是终端使用场景，它的核心运行时 <code>AgentSessionRuntime</code> 是<strong>单 active session 模型</strong>：</p>
+<pre><code>AgentSessionRuntime
+  -&gt; runtime.session         // 当前只有一个活动 session
+  -&gt; runtime.switchSession()
+  -&gt; runtime.newSession()</code></pre>
+
+      <p>终端里天然只有一个「当前对话」，所以这个模型没问题。
+      但飞书是<strong>多用户、多群、多消息入口</strong>。如果所有飞书消息共用一个 runtime.session，会出大乱子：</p>
+
+      <table>
+        <tr><th>场景</th><th>出什么问题</th></tr>
+        <tr><td>A 用户发消息</td><td>消息进入 B 用户的上下文，串线</td></tr>
+        <tr><td>A 生成时 B 发消息</td><td>触发 session 切换，A 的任务被打断</td></tr>
+        <tr><td>B 点「停止生成」</td><td>误中断 A 的任务</td></tr>
+        <tr><td>权限确认卡片</td><td>两个用户同时等待确认，resolve 串线</td></tr>
+        <tr><td>流式输出</td><td>发错群、发错私聊</td></tr>
+      </table>
+
+      <p>因此本项目引入了<strong>会话隔离架构</strong>（下一章会详细展开）：</p>
+
+<pre><code>ConversationRouter
+  -&gt; SessionHostManager
+       -&gt; dm:alice        -&gt; SessionHost A -&gt; Runtime A + Queue A
+       -&gt; dm:bob          -&gt; SessionHost B -&gt; Runtime B + Queue B
+       -&gt; group:chat-123  -&gt; SessionHost C -&gt; Runtime C + Queue C</code></pre>
+
+      <p>每个会话（某个私聊用户 / 某个群）拥有<strong>独立的</strong> Pi runtime、串行队列、活跃任务标记和飞书上下文，
+      互不干扰，还能并发运行。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 为什么这是「项目的第一性原理」</div>
+        <p>整个项目的所有代码，几乎都在为「<strong>在单会话模型之上实现多会话隔离</strong>」服务。
+        你先记住这个矛盾，后面每一章都能对上号。</p>
+      </div>
+
+      <h2>3. 两个进程的边界（第二重要的认知）</h2>
+      <p>项目拆成<strong>两个独立部分</strong>，这是整份代码的骨架：</p>
+
+      <table>
+        <tr><th></th><th>Transport Host（传输服务进程）</th><th>Pi Extension（Pi 扩展）</th></tr>
+        <tr><td>入口</td><td><code>src/bin/pi-feishu.ts</code>，命令 <code>pi-feishu serve</code></td><td><code>src/extensions/index.ts</code></td></tr>
+        <tr><td>运行方式</td><td>长期运行的长连接进程</td><td>被 Pi 自己加载（<code>package.json</code> 的 <code>pi.extensions</code> 字段）</td></tr>
+        <tr><td>职责</td><td>连接飞书 WebSocket、接收消息、处理卡片、维护会话、调用 Pi runtime</td><td>注册工具（<code>send_file_to_chat</code>）、注册 <code>/feishu</code> 命令、注入 prompt 指引</td></tr>
+        <tr><td>会不会打开飞书连接</td><td>会（这是它的本分）</td><td><strong>不会</strong></td></tr>
+      </table>
+
+      <p>为什么拆开？<strong>transport host 是「嘴和耳朵」，extension 是「手」</strong>。
+      两者解耦后：不启动 transport 时 Pi 依然正常使用；extension 不需要关心飞书 SDK 细节。</p>
+
+      <h2>4. 源码目录结构</h2>
+<pre><code>src/
+├── bin/
+│   └── pi-feishu.ts          # CLI 入口：解析参数、组装组件、启动服务
+├── config/
+│   ├── schema.ts             # 配置的类型解析/合并/默认值
+│   └── load-config.ts        # 配置加载：env &lt; 文件 &lt; CLI
+├── feishu/
+│   ├── channel.ts            # 飞书通道封装（SDK 的皮，屏蔽原始类型）
+│   ├── context.ts            # 飞书运行上下文（AsyncLocalStorage 魔法）
+│   └── webhook.ts            # Webhook transport（占位，未实现）
+├── bridge/                   # ★ 核心业务层：飞书世界和 Pi 世界的桥
+│   ├── conversation-router.ts    # 消息 → sessionKey 映射规则
+│   ├── message-normalizer.ts     # 飞书消息 → Pi 输入
+│   ├── session-host-manager.ts   # 会话宿主管理
+│   ├── runtime-host.ts           # 单个 Pi runtime 的封装
+│   ├── prompt-queue.ts           # 每会话串行队列
+│   ├── message-handler.ts        # 消息处理主流程
+│   ├── stream-renderer.ts        # Pi 事件流 → 飞书流式输出
+│   ├── ui-context.ts             # Pi UI 上下文 → 飞书卡片
+│   └── card-actions.ts           # 飞书卡片按钮 → 管理操作
+├── cards/                    # 飞书卡片 JSON 构建器
+│   ├── common.ts             # 卡片基础组件
+│   ├── help / models / sessions / status / stop / permission.ts
+├── attachments/
+│   ├── processor.ts          # 附件下载与分类
+│   ├── mime.ts               # MIME 推断、文本判断
+│   └── temp-files.ts         # 临时文件写入与清理
+├── store/
+│   ├── store.ts              # 存储工厂（json / sqlite 占位）
+│   └── json-store.ts         # JSON 文件存储（会话映射持久化）
+├── tools/
+│   └── send-file-to-chat.ts  # Pi 工具：模型生成文件后发回飞书
+├── extensions/
+│   └── index.ts              # Pi 扩展入口
+├── index.ts                  # 包对外导出
+└── types.ts                  # ★ 全部类型定义（建议第一个读的文件）</code></pre>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p>阅读顺序建议：先看 <code>src/types.ts</code>（类型地基），再看 <code>src/index.ts</code>（包导出了什么）。</p>
+      </div>
+
+      <h2>5. 技术栈与依赖</h2>
+      <table>
+        <tr><th>依赖</th><th>作用</th></tr>
+        <tr><td><code>@earendil-works/pi-coding-agent</code></td><td>Pi Agent SDK：<code>AgentSessionRuntime</code>、<code>SessionManager</code>、<code>ModelRegistry</code>、<code>ExtensionAPI</code></td></tr>
+        <tr><td><code>@larksuiteoapi/node-sdk</code></td><td>飞书官方 SDK，提供 <code>createLarkChannel</code>（WebSocket 通道）</td></tr>
+        <tr><td><code>typebox</code></td><td>工具参数 schema（<code>send_file_to_chat</code> 的入参校验）</td></tr>
+        <tr><td><code>vitest</code></td><td>单元测试框架</td></tr>
+      </table>
+
+      <h2>6. 当前实现状态</h2>
+      <table>
+        <tr><th>能力</th><th>状态</th></tr>
+        <tr><td>WebSocket transport</td><td>✅ 已实现</td></tr>
+        <tr><td>Webhook transport</td><td>❌ 占位（只有抛错函数）</td></tr>
+        <tr><td>私聊 / 群聊（@机器人）</td><td>✅ 已实现</td></tr>
+        <tr><td>会话隔离 + 持久化</td><td>✅ 已实现（JSON store）</td></tr>
+        <tr><td>流式输出 / 停止</td><td>✅ 已实现</td></tr>
+        <tr><td>模型选择 / 会话管理卡片</td><td>✅ 已实现</td></tr>
+        <tr><td>权限确认卡片（confirm/select）</td><td>✅ 已实现</td></tr>
+        <tr><td>图片 / 附件输入</td><td>✅ 已实现</td></tr>
+        <tr><td>文件回传 <code>send_file_to_chat</code></td><td>✅ 已实现</td></tr>
+        <tr><td>SQLite store</td><td>❌ 占位</td></tr>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <ul>
+          <li>这是一个 <strong>transport 扩展包</strong>：不改 Pi 核心，把飞书接进来</li>
+          <li>核心难题：<strong>飞书多用户并发 vs Pi 单 session 模型</strong>，用 SessionHostManager 解决</li>
+          <li>两个进程：<code>pi-feishu serve</code>（传输）+ Pi extension（能力注册）</li>
+          <li><code>src/types.ts</code> 是全部类型的地基，建议最先读</li>
+        </ul>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>打开 <code>src/index.ts</code>，看看这个包对外导出了哪些模块？猜猜为什么这些被选为「公共 API」？</li>
+          <li>打开 <code>src/types.ts</code>，找出 <code>SessionHost</code> 接口，它由哪几个字段组成？</li>
+          <li>为什么说「extension 不打开飞书连接」是合理的？如果 extension 也连飞书会出什么问题？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

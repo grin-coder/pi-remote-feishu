@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>10 附件处理 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="10-attachments.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>10 附件处理</h1>
+        <p>「下载 → 分类 → 转换」：把飞书文件翻译成 Pi 能用的输入。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>掌握附件分类决策树（图片/小文本/大文件）</li>
+          <li>理解「能力探测驱动降级」：模型不支持图片时怎么办</li>
+          <li>学会文件名/sessionKey 消毒，防路径注入</li>
+        </ul>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p><span class="file-path">src/attachments/processor.ts</span>（57 行）<br>
+        <span class="file-path">src/attachments/mime.ts</span>（19 行）<br>
+        <span class="file-path">src/attachments/temp-files.ts</span>（17 行）</p>
+      </div>
+
+      <h2>1. 角色定位</h2>
+      <p>用户可能在飞书里发图片、文件、音频、视频。Pi 需要的是：
+      文本（放进 prompt）、图片（base64，给支持视觉的模型）。
+      附件处理就是把「飞书文件」翻译成「Pi 能用的输入」并分门别类。</p>
+
+      <h2>2. 决策树（processor.ts 核心）</h2>
+<pre><code>export async function processAttachments(options): Promise&lt;ProcessedAttachments&gt; {
+  const images: ImageInput[] = [];
+  const notes: string[] = [];
+
+  for (const resource of options.message.resources) {
+    if (resource.type === "sticker") continue;                    // ① 表情包直接跳过
+
+    const fileName = resourceFileName(resource.fileKey, resource.fileName);
+
+    try {
+      const buffer = await options.channel.downloadResource(      // ② 下载文件内容
+        options.message.messageId, resource.fileKey, resource.type);
+
+      if (resource.type === "image" && options.supportsImages) {  // ③ 图片 + 模型支持 → base64
+        images.push({ type: "image", data: buffer.toString("base64"),
+                      mimeType: inferMimeType(fileName) });
+        continue;
+      }
+
+      if (resource.type !== "audio" && resource.type !== "video"  // ④ 小文本文件 → 展开进 prompt
+          && buffer.length &lt;= TEXT_SIZE_LIMIT && isLikelyText(buffer)) {
+        notes.push(`[Attachment text: ${fileName}]\n${buffer.toString("utf-8")}`);
+        continue;
+      }
+
+      // ⑤ 其余 → 存临时文件，只给路径说明
+      const filePath = await writeTempAttachment(options.config.files.tempDir ?? ".", options.sessionKey, fileName, buffer);
+      notes.push(`[Attachment saved: ${fileName} -&gt; ${filePath}]`);
+    } catch (error) {
+      // ⑥ 下载/处理失败：不中断，记录说明
+      notes.push(`[Attachment failed: ${fileName}: ${message}]`);
+    }
+  }
+
+  return { images, notes };
+}</code></pre>
+
+      <h2>3. 分支逻辑讲解</h2>
+
+      <h3>① 跳过表情包（sticker）</h3>
+      <p>表情包对模型没有价值，直接跳过，节省下载。</p>
+
+      <h3>② 下载</h3>
+      <p><code>channel.downloadResource</code> 返回 <code>Buffer</code>。<strong>一次下载决定后续所有分支</strong>，
+      所以下载在 try 里——下载失败走 catch 分支（记 note，不中断整条消息）。</p>
+
+      <h3>③ 图片 → base64</h3>
+<pre><code>if (resource.type === "image" && options.supportsImages) {
+  images.push({ type: "image", data: buffer.toString("base64"), mimeType: inferMimeType(fileName) });
+  continue;
+}</code></pre>
+
+      <p>条件：<code>type === "image"</code> <strong>且</strong> 当前会话模型 <code>supportsImages()</code>。</p>
+      <div class="callout tip">
+        <div class="callout-title">💡 能力探测驱动降级</div>
+        <p>如果模型不支持图片，这张图会掉进下面的分支——根据是否文本决定展开还是存临时文件。
+        <strong>模型强则吃原图，模型弱则降级处理。</strong>这就是「能力探测驱动降级」策略。</p>
+      </div>
+
+      <p><code>mimeType</code> 用 <code>inferMimeType(fileName)</code> 从扩展名推断（mime.ts）：</p>
+<pre><code>const MIME_BY_EXTENSION: Record&lt;string, string&gt; = {
+  png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp", ...
+};
+export function inferMimeType(fileName: string): string {
+  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
+  return MIME_BY_EXTENSION[extension] ?? "application/octet-stream";
+}</code></pre>
+
+      <h3>④ 小文本 → 内容展开</h3>
+<pre><code>const TEXT_SIZE_LIMIT = 32 * 1024;   // 32KB
+
+export function isLikelyText(buffer: Buffer): boolean {
+  return !buffer.subarray(0, 4096).includes(0);   // 前 4KB 无 NUL 字节 ≈ 文本
+}</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 isLikelyText 的启发式</div>
+        <p>二进制文件通常含 NUL 字节（0x00），文本几乎不含。只看前 4096 字节就够判断，性能好。</p>
+      </div>
+
+      <p>符合条件 → 内容直接织进 prompt：<code>[Attachment text: {fileName}] + 内容</code>。
+      <strong>这是「小文件进上下文」策略</strong>——用户发个小脚本，模型直接能看内容。</p>
+
+      <h3>⑤ 大文件/其他 → 临时文件</h3>
+<pre><code>const filePath = await writeTempAttachment(tempDir, sessionKey, fileName, buffer);
+notes.push(`[Attachment saved: ${fileName} -&gt; ${filePath}]`);</code></pre>
+
+      <p>模型看到的是路径说明（无法读内容，但知道文件在哪、可以调用工具去处理它）。</p>
+
+      <h3>⑥ 失败 → 记录说明</h3>
+      <p>下载失败不中断整条消息处理，记一条 note 让模型知道有附件没处理成功。</p>
+
+      <h2>4. 临时文件安全（temp-files.ts）</h2>
+<pre><code>export async function writeTempAttachment(tempDir, sessionKey, fileName, buffer): Promise&lt;string&gt; {
+  // ① 文件名消毒：去掉路径注入字符
+  const sanitizedName = fileName.replace(/[&lt;&gt;:"/\\|?*\u0000-\u001f]/g, "_");
+  // ② 空/特殊名兜底
+  const safeName = sanitizedName.length &gt; 0 && sanitizedName !== "." && sanitizedName !== ".."
+    ? sanitizedName : "attachment.bin";
+  // ③ sessionKey 消毒后作为子目录（防止路径穿越）
+  const dir = join(tempDir, sessionKey.replace(/[^a-zA-Z0-9_.-]/g, "_"));
+  await mkdir(dir, { recursive: true });
+  const filePath = join(dir, safeName);
+  await writeFile(filePath, buffer);
+  return filePath;
+}</code></pre>
+
+      <div class="callout danger">
+        <div class="callout-title">⚠️ 为什么必须消毒？</div>
+        <p><strong>文件名和 sessionKey 都来自外部输入，必须消毒</strong>：
+        文件名去掉 <code>&lt;&gt;:"/\|?*</code> 和控制字符——防止 <code>../../etc/passwd</code> 这种路径注入；
+        sessionKey 只保留安全字符——防止会话 key 里的 <code>/</code> 造成目录穿越。</p>
+      </div>
+
+      <h2>5. 清理时机</h2>
+      <p><code>cleanupTempAttachments</code> 在三个地方被调用（都是 finally 或命令处理完）：</p>
+      <table>
+        <tr><th>位置</th><th>时机</th></tr>
+        <tr><td>runtime-host.ts prompt finally</td><td>每次 prompt 结束后</td></tr>
+        <tr><td>message-handler.ts 命令分支后</td><td>命令处理完</td></tr>
+      </table>
+      <p><strong>临时文件的生命周期 = 一次消息处理</strong>。用完即清，不留垃圾。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <table>
+          <tr><th>资源类型</th><th>处理策略</th><th>模型看到什么</th></tr>
+          <tr><td>表情包</td><td>跳过</td><td>无</td></tr>
+          <tr><td>图片 + 视觉模型</td><td>base64 传入</td><td>真图</td></tr>
+          <tr><td>图片 + 非视觉模型</td><td>降级为文件说明</td><td>路径</td></tr>
+          <tr><td>小文本</td><td>内容展开</td><td>全文</td></tr>
+          <tr><td>大文件/媒体</td><td>临时文件</td><td>路径说明</td></tr>
+          <tr><td>下载失败</td><td>记 note</td><td>失败说明</td></tr>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>如果发来一个 500KB 的 .txt 文件，它会走哪个分支？为什么？（提示：TEXT_SIZE_LIMIT）</li>
+          <li>为什么附件失败只记 note 而不是抛错中断整个消息？这种「降级不中断」策略在什么场景适用？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

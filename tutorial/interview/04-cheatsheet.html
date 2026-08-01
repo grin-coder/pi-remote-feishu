@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>04 面试速查卡 · pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="interview" data-chapter="04-cheatsheet.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第三部分 · 面试准备</span>
+        <h1>04 面试速查卡</h1>
+        <p>面试前快速过一遍：项目定位、核心链路、关键取舍、风险和下一步。</p>
+      </header>
+
+      <h2>30 秒项目介绍</h2>
+      <div class="callout note">
+        <p><code>pi-remote-feishu</code> 是一个飞书到 Pi Agent 的远程控制扩展。我把飞书私聊和群聊映射成不同的 Pi 会话，每个会话有独立 runtime、队列和 active run，保证多用户场景下不串上下文、不停错任务、不发错回复。项目还把 Pi 的权限确认适配成飞书卡片，并提供受控的文件回传工具，让 Agent 生成的文件可以安全地发回当前飞书会话。</p>
+      </div>
+
+      <h2>核心链路</h2>
+<pre><code>Feishu WebSocket 收到消息
+  -> 路由：私聊 / 群聊 / 是否需要 @bot / 白名单
+  -> sessionKey：dm / group / group-user
+  -> SessionHost：runtime + queue + activeRun
+  -> 附件处理：图片 / 小文本 / 大文件
+  -> Pi prompt：流式生成
+  -> 飞书卡片：处理中 / 停止 / 完成 / 权限确认
+</code></pre>
+
+      <h2>最该讲的 5 个设计决策</h2>
+      <table>
+        <tr><th>决策</th><th>一句话解释</th></tr>
+        <tr><td>每 sessionKey 一个 runtime</td><td>把飞书的多用户场景映射成 Pi 的多会话管理模型</td></tr>
+        <tr><td>per-session queue</td><td>同会话串行保证上下文顺序，不同会话并行保证吞吐</td></tr>
+        <tr><td>JSON store 只做映射</td><td>Pi 自己保存会话历史，store 只记录飞书身份到 Pi session 文件的索引</td></tr>
+        <tr><td>send_file_to_chat 做成工具</td><td>由模型主动调用，但发送范围由白名单和上下文限制</td></tr>
+        <tr><td>lark-cli skill 按需加载</td><td>扩展飞书文档和只读查询能力，同时禁止 IM 写操作绕过桥接层</td></tr>
+      </table>
+
+      <h2>高频追问速答</h2>
+      <table>
+        <tr><th>问题</th><th>回答方向</th></tr>
+        <tr><td>为什么不用一个全局 session</td><td>会串上下文、停错任务、发错卡片，飞书必须按会话隔离</td></tr>
+        <tr><td>为什么不用全局锁</td><td>全局锁会让一个长任务阻塞所有用户，应该按 sessionKey 串行</td></tr>
+        <tr><td>群聊和私聊是否冲突</td><td>不冲突，key 不同，runtime 和队列也不同</td></tr>
+        <tr><td>Webhook 不做影响什么</td><td>不影响当前 WebSocket 私聊和群聊，Webhook 只是另一种 transport</td></tr>
+        <tr><td>lark-cli 是不是必装</td><td>不是。核心收发用 Feishu SDK，lark-cli 只是可选 skill 增强</td></tr>
+        <tr><td>工具会不会太多</td><td>v1 常驻工具很少，飞书文档类能力通过 skill 按需加载</td></tr>
+        <tr><td>多进程怎么做</td><td>sessionKey 固定路由到 worker，pending dialog 和 store 外置</td></tr>
+        <tr><td>最大风险是什么</td><td>连接可靠性、消息幂等、外部文件安全和多进程状态迁移</td></tr>
+      </table>
+
+      <h2>模块地图</h2>
+      <table>
+        <tr><th>模块</th><th>职责</th></tr>
+        <tr><td><code>src/feishu</code></td><td>飞书 SDK 封装、WebSocket channel、运行上下文</td></tr>
+        <tr><td><code>src/bridge</code></td><td>消息路由、会话管理、runtime 编排、流式渲染、卡片动作</td></tr>
+        <tr><td><code>src/cards</code></td><td>飞书卡片构建，保持纯函数和展示层边界</td></tr>
+        <tr><td><code>src/attachments</code></td><td>图片、文本、文件附件处理和临时文件清理</td></tr>
+        <tr><td><code>src/tools</code></td><td>Pi 工具注册，目前核心是文件回传</td></tr>
+        <tr><td><code>src/store</code></td><td>桥接层状态映射，当前是 JSON store</td></tr>
+        <tr><td><code>src/extensions</code></td><td>Pi 扩展入口、命令、工具、skill 加载和 lark-cli guard</td></tr>
+        <tr><td><code>src/bin</code></td><td>CLI 和 composition root</td></tr>
+      </table>
+
+      <h2>可诚实说明的不足</h2>
+      <table>
+        <tr><th>不足</th><th>下一步</th></tr>
+        <tr><td>Webhook transport 只是占位</td><td>实现同一个 FeishuChannel 接口即可接入</td></tr>
+        <tr><td>JSON store 适合 v1，不适合多进程</td><td>升级 SQLite 或 Postgres，并把 pending dialog 外置</td></tr>
+        <tr><td>WebSocket 可靠性还可增强</td><td>补充重连策略、消息幂等、发送失败补偿</td></tr>
+        <tr><td>飞书文档和表格能力还偏 skill 化</td><td>高频能力沉淀成按需工具，低频能力保留 CLI skill</td></tr>
+      </table>
+
+      <h2>面试前检查</h2>
+      <ol>
+        <li>能在 30 秒讲清项目价值。</li>
+        <li>能画出 Feishu -> Pi -> Feishu 的核心链路。</li>
+        <li>能解释为什么必须有 SessionHostManager。</li>
+        <li>能说清楚 per-session queue 和全局锁的区别。</li>
+        <li>能解释 send_file_to_chat 的安全边界。</li>
+        <li>能诚实讲出 Webhook、JSON store、多进程的演进方案。</li>
+      </ol>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

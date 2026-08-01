@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05 关键设计决策 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="architecture" data-chapter="05-design-decisions.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第一部分 · 架构设计</span>
+        <h1>05 关键设计决策</h1>
+        <p>13 个最重要的设计取舍：每个都回答「为什么这样做、替代方案是什么、代价是什么」。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>理解每个关键决策背后的思考过程</li>
+          <li>学会在面试/讲解时用「问题 → 选择 → 替代方案 → 代价」的结构表达</li>
+        </ul>
+      </div>
+
+      <h2>决策总览表</h2>
+      <table>
+        <tr><th>#</th><th>决策</th><th>一句话</th></tr>
+        <tr><td>1</td><td>扩展包不改核心</td><td>顺 SDK 集成，独立版本化发布</td></tr>
+        <tr><td>2</td><td>SessionHostManager</td><td>识别单 session 约束，按会话隔离</td></tr>
+        <tr><td>3</td><td>每会话队列</td><td>锁粒度 = 隔离粒度，不用全局锁</td></tr>
+        <tr><td>4</td><td>AsyncLocalStorage</td><td>隐式上下文穿透调用链</td></tr>
+        <tr><td>5</td><td>私聊按人/群聊共享</td><td>会话粒度是产品决策</td></tr>
+        <tr><td>6</td><td>群聊必 @</td><td>静默拒绝策略违规</td></tr>
+        <tr><td>7</td><td>卡片状态机</td><td>原地更新替代消息洪流</td></tr>
+        <tr><td>8</td><td>UI 桥接</td><td>复用 Pi 生态权限能力</td></tr>
+        <tr><td>9</td><td>三层文件防线</td><td>模型输入不可信</td></tr>
+        <tr><td>10</td><td>延迟多租户</td><td>只付字段的代价</td></tr>
+        <tr><td>11</td><td>宽容解析严格补全</td><td>边界消化坏输入</td></tr>
+        <tr><td>12</td><td>语义化占位</td><td>显式失败优于空壳</td></tr>
+      </table>
+
+      <h2>重点决策详解</h2>
+
+      <h3>决策 2：识别「单 active session」瓶颈，引入 SessionHostManager</h3>
+      <p><strong>问题</strong>：Pi 的 <code>AgentSessionRuntime</code> 是单 session 模型（终端场景合理）。飞书是多用户、多群、多消息入口——<strong>共用一个 runtime 必然串线</strong>。</p>
+      <p><strong>选择</strong>：<code>sessionKey → SessionHost</code> 的 Map。每个 host 持有独立 runtime + queue + activeRun + context。</p>
+      <p><strong>不这么做会怎样</strong>（设计文档列举的故障）：</p>
+      <ul>
+        <li>A 用户消息进 B 上下文</li>
+        <li>A 生成时 B 的消息触发 session 切换</li>
+        <li>B 点停止误中断 A</li>
+        <li>权限卡片串线</li>
+        <li>流式输出发错群</li>
+      </ul>
+      <div class="callout tip">
+        <div class="callout-title">💡 教学点</div>
+        <p><strong>识别底层模型的约束，再设计上层架构去满足真实场景。</strong>这是整个项目最重要的一步思考，比任何具体代码都值钱。</p>
+      </div>
+
+      <h3>决策 3：每会话一个 PromptQueue，而不是全局锁</h3>
+      <p><strong>替代方案对比</strong>：</p>
+      <table>
+        <tr><th>方案</th><th>问题</th></tr>
+        <tr><td>全局锁</td><td>一个群生成时，所有私聊和其他群全被阻塞（差）</td></tr>
+        <tr><td>事件循环调度器</td><td>复杂度高，MVP 不需要</td></tr>
+        <tr><td>每会话队列 ✅</td><td>锁粒度 = 隔离粒度，互不阻塞</td></tr>
+      </table>
+
+      <h3>决策 4：用 AsyncLocalStorage 传递运行上下文</h3>
+      <table>
+        <tr><th>替代方案</th><th>为什么不行</th></tr>
+        <tr><td>全局变量</td><td>并发时互相覆盖，完全错误</td></tr>
+        <tr><td>改工具签名</td><td>侵入 Pi SDK 的 ToolDefinition，违背决策 1</td></tr>
+        <tr><td>闭包注入</td><td>无法穿透 Pi 内部的工具调用链</td></tr>
+        <tr><td>AsyncLocalStorage ✅</td><td>跨调用链传递而不污染签名</td></tr>
+      </table>
+
+      <h3>决策 5：私聊按用户隔离，群聊默认共享</h3>
+      <table>
+        <tr><th>场景</th><th>key</th><th>理由</th></tr>
+        <tr><td>私聊</td><td><code>dm:{userOpenId}</code></td><td>一个用户一个上下文，连续</td></tr>
+        <tr><td>群聊默认</td><td><code>group:{chatId}</code></td><td>协作场景，大家接力讨论同一问题</td></tr>
+        <tr><td>群聊可选</td><td><code>group-user:{chatId}:{userOpenId}</code></td><td>需要个人上下文时开启</td></tr>
+      </table>
+      <p><strong>教学点</strong>：会话粒度是产品决策，不是技术决策。默认值选择「共享」（协作）而不是「隔离」（隐私），符合 MVP 场景。</p>
+
+      <h3>决策 8：权限确认桥接 ExtensionUIContext</h3>
+      <p><strong>问题</strong>：Pi 的扩展权限确认（confirm/select）是 TUI 交互，远程用户看不到。</p>
+      <p><strong>选择</strong>：<code>createFeishuUIContext()</code> 把 select/confirm/notify 桥接成飞书卡片，用 <code>pendingDialogs</code> 注册表挂起 Promise，按钮回调 resolve。</p>
+      <p><strong>价值</strong>：<strong>Pi 生态里已有的全部权限交互能力，飞书用户也能用</strong>，不用为飞书重新实现一套权限系统。</p>
+      <p><strong>教学点</strong>：桥接的本质是「接口适配」——同一个 Promise 语义，换一个 IO 介质。</p>
+
+      <h3>决策 9：模型输入按不可信数据对待（三层防线）</h3>
+      <p><code>send_file_to_chat</code> 的 filePath 是模型生成的，模型也可能被骗/出错：</p>
+      <ol>
+        <li>路径必须在 <code>allowedOutputDirs</code> 白名单内（防目录穿越）</li>
+        <li>必须是文件</li>
+        <li>大小不超过 <code>maxUploadBytes</code></li>
+      </ol>
+      <p>附件处理同样：文件名/sessionKey 消毒，防路径注入。</p>
+      <p><strong>教学点</strong>：即使调用方是「自己人」（模型），也要做输入校验。模型输出同样可能是恶意的或错误的。</p>
+
+      <h3>决策 10：延迟多租户</h3>
+      <p><strong>选择</strong>：<strong>不做</strong>。只在数据结构里保留 <code>tenantKey</code> 字段。</p>
+      <p><strong>理由</strong>：MVP 是一个飞书应用服务一个团队。多租户意味着 tenant router、tenant policy、tenant billing……复杂度成倍增长。</p>
+      <p><strong>教学点</strong>：为「未来可能的需求」只付「字段的代价」，不付「架构的代价」——YAGNI 原则。</p>
+
+      <h3>决策 11：宽容解析 + 严格补全的配置系统</h3>
+      <p><strong>选择</strong>：</p>
+      <ul>
+        <li><code>parsePartialConfig</code>：逐字段类型校验，坏字段忽略（宽容）</li>
+        <li><code>normalizeConfig</code>：必填缺失抛错，可选补默认值（严格）</li>
+        <li><code>mergeConfig</code>：env &lt; 文件 &lt; CLI，子对象逐层合并</li>
+      </ul>
+      <p><strong>教学点</strong>：解析阶段宽容、使用阶段严格。坏输入在边界被消化，下游永远拿到完整、类型正确的配置。</p>
+
+      <h3>决策 12：占位用语义化错误，不用空壳</h3>
+      <p>webhook 和 SQLite 都是「接口已定义、实现未完成」。占位方式是<strong>抛带说明的错误</strong>，而不是空函数或 TODO 注释。</p>
+      <p><strong>教学点</strong>：未实现的功能要「显式失败」——调用方立刻知道「为什么不能用、怎么绕过」。</p>
+
+      <h2>已知的待改进点（诚实清单）</h2>
+      <table>
+        <tr><th>项目</th><th>现状</th><th>风险</th></tr>
+        <tr><td><code>getHost</code> 首次并发</td><td>无锁，可能双创建</td><td>两条消息同时到新会话时可能建两个 host（WebSocket 事件基本有序，实际低概率）</td></tr>
+        <tr><td><code>evictIdle</code> 无调度</td><td>没有定时器主动调用</td><td>空闲会话不回收，内存长期占用</td></tr>
+        <tr><td>卡片动作的耗时操作</td><td>同步 await</td><td>会话切换/删除可能阻塞回调处理</td></tr>
+        <tr><td>多进程</td><td>无</td><td>pendingDialogs、内存 host 都是进程内状态</td></tr>
+      </table>
+      <div class="callout tip">
+        <div class="callout-title">💡 教学点</div>
+        <p>架构文档要包含「已知缺陷」——面试被追问时，主动说比被戳穿强。诚实也是设计的一部分。</p>
+      </div>
+
+      <h2>面试/讲解时的 90 秒版本</h2>
+      <div class="callout note">
+        <div class="callout-title">🗣️ 说给你听</div>
+        <p>「这个项目把飞书变成 Pi Agent 的远程交互入口。
+        核心挑战是 Pi 的运行时是<strong>单会话模型</strong>，而飞书是<strong>多用户多群</strong>的——
+        所以我按 sessionKey 做了会话隔离：每个会话独立 runtime、独立串行队列、
+        独立活跃任务标记，用 AsyncLocalStorage 传递当前请求上下文，保证流式输出、
+        停止操作和权限确认都不会串线。
+        对外，飞书 SDK 被封装成一个干净接口；对内，Pi 的 UI 上下文被桥接成飞书卡片，
+        权限确认在远程也能用。模型生成的文件通过注册的 send_file_to_chat 工具直接发回聊天。
+        整个项目不改 Pi 核心，是一个独立可发布的扩展包。」</p>
+      </div>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <p>第一部分到此结束。你已经掌握了：项目定位、四层架构、四个核心概念、一条消息的全链路、以及 13 个关键决策。
+        现在可以进入 <strong>第二部分 · 源码解读</strong>，逐模块精读真实代码了。</p>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习（能力自测）</div>
+        <ol>
+          <li>不看教程，在白纸上画出架构总览图（从飞书消息到 Pi 回复的完整链路）。</li>
+          <li>解释为什么「全局锁」在飞书场景是错误方案？</li>
+          <li>说出三个 AsyncLocalStorage 的替代方案以及它们各自为什么不行。</li>
+          <li>如果现在让你设计一个「企业微信版」的 transport，哪些决策可以直接复用？哪些要改？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

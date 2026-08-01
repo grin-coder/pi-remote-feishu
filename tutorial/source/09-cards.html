@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>09 卡片系统 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="09-cards.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>09 卡片系统</h1>
+        <p>飞书卡片的构建与按钮回调：组合模式 + value 协议 + 状态卡。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>理解卡片 JSON 的组合构建方式（common.ts 基础组件）</li>
+          <li>掌握按钮 value 协议（cmd 分发）和身份恢复的两级兜底</li>
+          <li>理解「任务状态卡」一张卡两个生命阶段的模式</li>
+        </ul>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p><span class="file-path">src/cards/common.ts + 6 张业务卡</span><br>
+        <span class="file-path">src/bridge/card-actions.ts</span>（140 行）</p>
+      </div>
+
+      <h2>1. 卡片是什么</h2>
+      <p>飞书卡片是 JSON 结构，通过 <code>sendCard(chatId, card)</code> 发送，支持按钮、下拉菜单等交互。
+      卡片被点击后，飞书回调携带按钮的 <code>value</code>（自定义数据）到 WebSocket，由 <code>card-actions.ts</code> 处理。</p>
+
+<pre><code>发送方                          点击方
+buildXxxCard(card JSON) ──► 飞书渲染 ──► 用户点按钮
+                                          │ value: {cmd:"stop", sessionKey:"dm:alice"}
+                                          ▼
+                                    card-actions.handleCardAction</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 教学点</div>
+        <p><strong>按钮 value 是卡片与后端通信的信使</strong>——所有命令都编码在 value 里。</p>
+      </div>
+
+      <h2>2. 卡片构建器（src/cards/）</h2>
+
+      <h3>2.1 common.ts：基础组件库</h3>
+<pre><code>export function textBlock(content: string): JsonObject {
+  return { tag: "div", text: { tag: "lark_md", content } };   // markdown 文本块
+}
+
+export function button(text: string, value: JsonObject, type = "default"): JsonObject {
+  return { tag: "button", text: { tag: "plain_text", content: text }, type, value };
+}
+
+export function card(title, template, elements): JsonObject {
+  return { config: { wide_screen_mode: true },
+           header: { title: { tag: "plain_text", content: title }, template },
+           elements };
+}</code></pre>
+
+      <p>还有 <code>actions</code>（按钮组）、<code>selectMenu</code>（下拉菜单）、<code>noteBlock</code>（灰色注释）。
+      这是<strong>组合模式</strong>：业务卡片用基础组件搭出来，不用重复写原始 JSON。</p>
+
+      <h3>2.2 六张业务卡片</h3>
+      <table>
+        <tr><th>文件</th><th>卡片</th><th>用途</th></tr>
+        <tr><td>help.ts</td><td>帮助卡</td><td><code>/help</code>，列出命令和文件能力</td></tr>
+        <tr><td>models.ts</td><td>模型选择卡</td><td><code>/models</code>，列出模型 + 使用按钮</td></tr>
+        <tr><td>sessions.ts</td><td>会话管理卡</td><td><code>/sessions</code>，列出/切换/新建/删除会话</td></tr>
+        <tr><td>status.ts</td><td>状态卡</td><td><code>/status</code>，连接/队列/模型/运行状态</td></tr>
+        <tr><td>stop.ts</td><td>任务状态卡</td><td>生成中「停止」+ 完成后「已完成/失败」</td></tr>
+        <tr><td>permission.ts</td><td>权限确认卡</td><td>confirm/select 的远程 UI</td></tr>
+      </table>
+
+      <h3>2.3 任务状态卡（stop.ts）—— 一张卡的两个生命阶段</h3>
+<pre><code>// 生成中：黄色 + 停止按钮
+export function buildStopCard(options): JsonObject {
+  return card("Pi 正在处理", "yellow", [
+    textBlock([...正在回复谁、会话、模式...].join("\n")),
+    actions([button("停止生成", { cmd: "stop", sessionKey: options.sessionKey }, "danger")]),
+  ]);
+}
+
+// 结束后：灰色，无按钮
+export function buildStopDoneCard(title: string, message: string): JsonObject {
+  return card(title, "grey", [textBlock(message), noteBlock("这张状态卡会保留在当前聊天中。")]);
+}</code></pre>
+
+      <p>message-handler 里先发 stopCard，结束后用 <code>updateCard(stopCard.messageId, doneCard)</code> <strong>原地更新同一张卡</strong>。
+      这是飞书卡片模式的核心：<strong>用卡片状态机替代多条消息</strong>，聊天区不刷屏。</p>
+
+      <h2>3. 按钮 value 协议（card-actions 的契约）</h2>
+      <p>所有按钮 value 都遵循 <code>{ cmd: string, ... }</code> 结构：</p>
+      <table>
+        <tr><th>cmd</th><th>附加字段</th><th>动作</th></tr>
+        <tr><td><code>stop</code></td><td><code>sessionKey</code></td><td>中断该会话生成</td></tr>
+        <tr><td><code>session</code></td><td><code>action: new/switch/delete</code>、<code>targetSessionKey</code></td><td>会话管理</td></tr>
+        <tr><td><code>model</code></td><td><code>provider</code>、<code>modelId</code>、<code>thinkingLevel</code>、<code>sessionKey</code></td><td>切换模型</td></tr>
+        <tr><td><code>permission</code></td><td><code>dialogId</code>、<code>choice</code></td><td>权限确认</td></tr>
+      </table>
+
+      <h2>4. handleCardAction：卡片动作分发</h2>
+<pre><code>export async function handleCardAction(options): Promise&lt;void&gt; {
+  const value = options.event.actionValue;
+  const cmd = readString(value, "cmd");
+
+  if (cmd === "permission") {
+    // 权限确认：resolve 挂起的 Promise（见 UI 桥接一章）
+    if (options.event.token) {
+      await options.updateCardByToken(options.event.token, buildResolvedPermissionCard(value));
+    } else {
+      buildResolvedPermissionCard(value);
+    }
+    return;
+  }
+
+  const sessionKey = readString(value, "sessionKey");
+  if (!sessionKey) return;
+
+  if (cmd === "stop") {
+    await options.manager.abort(sessionKey);
+    return;
+  }
+
+  // 需要 host 的操作：先解析身份（从 sessionKey 或 store 映射）
+  const identity = await identityFromStore(options.config, options.store, options.event, sessionKey);
+
+  if (cmd === "session") {
+    const action = readString(value, "action");
+    if (action === "new") await options.manager.newSession(sessionKey, identity);
+    else if (action === "switch") { ... await options.manager.switchToMapping(...) }
+    else if (action === "delete") { ... await options.manager.deleteMapping(...) }
+    return;
+  }
+
+  if (cmd === "model") {
+    const host = await options.manager.getHost(sessionKey, identity);
+    const registry = new ModelRegistry(host.runtime.services.modelRuntime);
+    const provider = readString(value, "provider");
+    const modelId = readString(value, "modelId");
+    const thinkingLevel = readString(value, "thinkingLevel") ?? "off";
+    if (provider && modelId) {
+      const model = registry.find(provider, modelId);
+      if (model) {
+        await host.runtime.session.setModel(model);
+        host.runtime.session.setThinkingLevel(thinkingLevel as ...);
+      }
+    }
+    // 用 token 原地更新模型卡片，显示新选择
+    if (options.event.token) { await options.updateCardByToken(options.event.token, buildModelsCard({...})) }
+  }
+}</code></pre>
+
+      <h3>4.1 教学点：身份恢复（两级兜底）</h3>
+      <p>卡片动作可能来自<strong>没有 host 的会话</strong>（比如进程重启后点旧卡片）。<code>identityFromStore</code> 负责从 store 的会话映射里恢复：</p>
+<pre><code>async function identityFromStore(config, store, event, sessionKey): Promise&lt;FeishuIdentity&gt; {
+  const mapping = await store.getSessionMapping(sessionKey);
+  if (!mapping) return identityFromSessionKey(config, event, sessionKey);  // 兜底：从 key 推断
+  return { appId: config.appId, chatType: mapping.chatType, chatId: mapping.chatId,
+           userOpenId: mapping.userId ?? event.userOpenId ?? "unknown", ... };
+}
+
+// 从 key 推断的兜底逻辑
+function identityFromSessionKey(config, event, sessionKey): FeishuIdentity {
+  const group = sessionKey.startsWith("group:");
+  const groupUser = sessionKey.startsWith("group-user:");
+  return { appId: config.appId,
+           chatType: group || groupUser ? "group" : "private",
+           chatId: event.chatId, userOpenId: event.userOpenId ?? "unknown" };
+}</code></pre>
+
+      <p><strong>两条恢复路径</strong>：精确（store 映射）→ 兜底（key 前缀推断）。</p>
+
+      <h3>4.2 教学点：模型切换</h3>
+<pre><code>const registry = new ModelRegistry(host.runtime.services.modelRuntime);  // 从 runtime 拿模型注册表
+const model = registry.find(provider, modelId);                          // 校验模型存在
+if (model) {
+  await host.runtime.session.setModel(model);
+  host.runtime.session.setThinkingLevel(thinkingLevel as ...);
+}</code></pre>
+
+      <p>先查后设：模型不存在（已被配置移除）就不动，避免设置无效模型。</p>
+
+      <h2>5. 模型卡片与会话卡片的细节</h2>
+      <h3>5.1 模型列表分页</h3>
+<pre><code>for (const model of options.models.slice(0, 20)) {   // 最多展示 20 个
+  elements.push(textBlock([...模型信息...].join("\n")));
+  elements.push(actions([
+    button("使用", { cmd: "model", action: "select", sessionKey, provider, modelId, thinkingLevel: "off" }, "primary"),
+    button("高思考", { cmd: "model", action: "select", sessionKey, provider, modelId, thinkingLevel: "high" }),
+  ]));
+}</code></pre>
+      <p><strong>列表分页</strong>：<code>slice(0, 20)</code> + 提示「还有 N 个未展示」——大列表的务实处理。</p>
+
+      <h3>5.2 会话切换的 key 语义</h3>
+<pre><code>button("切换", { cmd: "session", action: "switch", sessionKey: current, targetSessionKey: mapping.sessionKey })</code></pre>
+      <p>切换/删除按钮的 <code>sessionKey</code> 是<strong>当前会话</strong>，<code>targetSessionKey</code> 是<strong>目标会话</strong>。
+      因为操作是「以当前 host 为容器，切换/删除目标会话」。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <table>
+          <tr><th>概念</th><th>实现</th></tr>
+          <tr><td>卡片构建</td><td>组合模式（common 基础组件 + 业务卡片）</td></tr>
+          <tr><td>按钮通信</td><td>value: {cmd, ...} 协议</td></tr>
+          <tr><td>状态卡</td><td>一张卡两个阶段（黄→灰），updateCard 原地更新</td></tr>
+          <tr><td>身份恢复</td><td>store 映射 → key 前缀推断（两级兜底）</td></tr>
+          <tr><td>模型切换</td><td>registry.find 校验 → setModel</td></tr>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>给模型卡片加一个「关闭 thinking」按钮（<code>thinkingLevel: "off"</code>），需要改几个文件？</li>
+          <li>为什么卡片动作里要「先查后设」模型？如果直接 <code>setModel</code> 会有什么风险？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

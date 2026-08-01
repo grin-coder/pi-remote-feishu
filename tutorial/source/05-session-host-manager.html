@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05 会话管理 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="05-session-host-manager.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>05 会话管理（SessionHostManager）</h1>
+        <p>所有 SessionHost 的管理员：查找、创建、持久化、生命周期、空闲回收。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>理解「内存热缓存 + 磁盘冷恢复」的双层设计</li>
+          <li>掌握 getHost / persistHost / evictIdle 的实现要点</li>
+          <li>知道当前实现存在的一个已知竞态（以及为什么风险低）</li>
+        </ul>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p><span class="file-path">src/bridge/session-host-manager.ts</span>（127 行）</p>
+      </div>
+
+      <h2>1. 角色定位</h2>
+      <p><code>SessionHostManager</code> 是<strong>所有 SessionHost 的管理员</strong>，管三件事：</p>
+      <ol>
+        <li>查找/创建 host（内存 Map + 磁盘 store 恢复）</li>
+        <li>生命周期（新建会话、切换会话、删除、空闲回收）</li>
+        <li>持久化（每次变更同步到 store）</li>
+      </ol>
+
+<pre><code>export class SessionHostManager {
+  private readonly hosts = new Map&lt;string, ManagedSessionHost&gt;();  // sessionKey → host
+  private readonly config: FeishuConfig;
+  private readonly store: FeishuStore;
+  private readonly channel: FeishuChannel;
+}</code></pre>
+
+      <p>依赖注入三件套：config、store、channel。<strong>所有依赖通过构造函数传入，不 new 依赖</strong>（组合根在 bin 里统一创建）。</p>
+
+      <h2>2. getHost：查找或创建（核心方法）</h2>
+<pre><code>async getHost(sessionKey: string, identity: FeishuIdentity): Promise&lt;ManagedSessionHost&gt; {
+  const existing = this.hosts.get(sessionKey);
+  if (existing) {
+    existing.lastUsedAt = new Date();   // ① 命中缓存：刷新时间戳
+    return existing;
+  }
+
+  // ② 未命中：尝试从 store 恢复
+  const mapping = await this.store.getSessionMapping(sessionKey);
+  const cwd = mapping?.cwd ?? this.config.sessions.defaultCwd ?? process.cwd();
+
+  // ③ 创建 runtime host（Pi 运行时）
+  const runtimeHost = await createRuntimeHost({
+    sessionKey, cwd, config: this.config, channel: this.channel,
+    ...(mapping?.sessionFile ? { sessionFile: mapping.sessionFile } : {}),  // 恢复历史会话文件
+  });
+
+  const host: ManagedSessionHost = {
+    sessionKey,
+    runtime: runtimeHost.runtime,
+    runtimeHost,
+    queue: new PromptQueue(),          // ④ 每个 host 一个全新队列
+    lastUsedAt: new Date(),
+  };
+  this.hosts.set(sessionKey, host);    // ⑤ 入内存
+
+  await this.persistHost(host, identity);  // ⑥ 持久化映射
+  return host;
+}</code></pre>
+
+      <h3>2.1 内存与磁盘的双缓存</h3>
+      <table>
+        <tr><th>层</th><th>存什么</th><th>作用</th></tr>
+        <tr><td>内存 Map</td><td>完整 host（含 runtime、队列）</td><td>热路径：直接复用，零 IO</td></tr>
+        <tr><td>磁盘 store</td><td><code>sessionKey → { sessionFile, cwd, ... }</code></td><td>冷路径：进程重启后恢复</td></tr>
+      </table>
+
+      <h3>2.2 恢复的语义</h3>
+      <p>如果 store 里有 <code>mapping.sessionFile</code>，<code>createRuntimeHost</code> 用 <code>SessionManager.open()</code> <strong>打开历史会话文件</strong>——用户之前的对话历史全回来了。
+      如果什么都没有，用 <code>SessionManager.create(cwd)</code> 新建。</p>
+
+      <h2>3. persistHost：持久化映射</h2>
+<pre><code>private async persistHost(host: ManagedSessionHost, identity: FeishuIdentity): Promise&lt;void&gt; {
+  const sessionFile = host.runtime.session.sessionFile;
+  if (!sessionFile) return;
+  const now = new Date().toISOString();
+  const previous = await this.store.getSessionMapping(host.sessionKey);
+  await this.store.setSessionMapping({
+    sessionKey: host.sessionKey,
+    appId: this.config.appId,
+    chatType: identity.chatType,
+    chatId: identity.chatId,
+    cwd: host.runtime.cwd,
+    sessionFile,
+    createdAt: previous?.createdAt ?? now,   // 首次创建时记 createdAt，之后保留
+    updatedAt: now,
+    ...(identity.tenantKey ? { tenantKey: identity.tenantKey } : {}),
+    ...(identity.chatType === "private" || this.config.sessions.groupScope === "per-user"
+      ? { userId: identity.userOpenId }      // 私聊/按用户隔离时记录用户
+      : {}),
+  });
+}</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 教学点</div>
+        <ol>
+          <li><strong>sessionFile 是「从 runtime 里读出来的」</strong>，不是凭空猜的——<code>runtime.session.sessionFile</code> 是 Pi SDK 给的真实会话文件路径。</li>
+          <li><code>createdAt</code> 用「上一次的值，没有就现在」——保证创建时间不被重复刷新。</li>
+          <li>字段按需附加（tenantKey、userId），保持记录最小。</li>
+        </ol>
+      </div>
+
+      <h2>4. 生命周期操作</h2>
+
+      <h3>4.1 newSession：新建</h3>
+<pre><code>async newSession(sessionKey: string, identity: FeishuIdentity): Promise&lt;void&gt; {
+  const host = await this.getHost(sessionKey, identity);
+  await host.runtime.newSession();                // Pi SDK：新建 session
+  await host.runtime.session.bindExtensions({});  // 重新绑定扩展（新 session 需要重新注册工具）
+  await this.persistHost(host, identity);
+}</code></pre>
+
+      <h3>4.2 switchToMapping：切换到另一个映射</h3>
+<pre><code>async switchToMapping(sessionKey, targetSessionKey, identity): Promise&lt;boolean&gt; {
+  const target = await this.store.getSessionMapping(targetSessionKey);
+  if (!target) return false;                     // 目标不存在 → 明确返回失败
+  const host = await this.getHost(sessionKey, identity);
+  await host.runtime.switchSession(target.sessionFile, { cwdOverride: target.cwd });
+  await host.runtime.session.bindExtensions({});
+  await this.persistHost(host, identity);
+  return true;
+}</code></pre>
+
+      <p><strong>切换的语义</strong>：当前 <code>sessionKey</code> 的 host 被切换到<strong>另一个已存在的会话文件</strong>。
+      返回值是 boolean——目标映射不存在就返回 false，调用方（卡片动作）据此决定是否提示。</p>
+
+      <h3>4.3 abort：中断</h3>
+<pre><code>async abort(sessionKey: string): Promise&lt;boolean&gt; {
+  const host = this.hosts.get(sessionKey);
+  if (!host) return false;
+  await host.runtimeHost.abort();   // 最终调用 runtime.session.abort()
+  return true;
+}</code></pre>
+
+      <p>只 abort <strong>这个 sessionKey</strong> 的 host——这就是「stop 不串线」的实现保证。</p>
+
+      <h3>4.4 deleteMapping：删除</h3>
+<pre><code>async deleteMapping(sessionKey: string): Promise&lt;void&gt; {
+  const host = this.hosts.get(sessionKey);
+  if (host) {
+    await host.runtimeHost.dispose();  // 释放 runtime 资源
+    this.hosts.delete(sessionKey);
+  }
+  await this.store.deleteSessionMapping(sessionKey);  // 删磁盘映射
+}</code></pre>
+
+      <p>内存和磁盘<strong>同步清理</strong>，避免下次 getHost 又恢复出已删除的会话。</p>
+
+      <h3>4.5 evictIdle：空闲回收</h3>
+<pre><code>async evictIdle(now: Date = new Date()): Promise&lt;void&gt; {
+  const expired: string[] = [];
+  for (const [key, host] of this.hosts) {
+    if (now.getTime() - host.lastUsedAt.getTime() &gt; this.config.sessions.idleTtlMs && !host.activeRun) {
+      expired.push(key);
+    }
+  }
+  for (const key of expired) {
+    const host = this.hosts.get(key);
+    if (host) {
+      await host.runtimeHost.dispose();
+      this.hosts.delete(key);
+    }
+  }
+}</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 教学点</div>
+        <ol>
+          <li><strong>先收集再删除</strong>——避免在遍历 Map 时删除（迭代器失效问题）。</li>
+          <li><strong><code>!host.activeRun</code> 是硬条件</strong>——有任务在跑，哪怕超时也不回收。</li>
+          <li>回收只清内存，<strong>磁盘映射保留</strong>，下次消息来了自动恢复。这就是「进程里热数据换页」的思路。</li>
+        </ol>
+      </div>
+
+      <h2>5. 已知竞态：getHost 无锁</h2>
+      <p><code>getHost</code> 本身存在一个<strong>竞态</strong>：两条并发消息首次到达同一个新 sessionKey，
+      可能同时 <code>get</code> 不到、同时创建两个 host。当前代码没有对 <code>getHost</code> 加锁。</p>
+      <p>不过实际影响有限：<code>handleFeishuMessage</code> 内部 <code>getHost</code> 之后才 <code>queue.enqueue</code>，
+      而两条消息几乎总是先后进入（同一飞书 chat 的 WebSocket 事件基本有序）。
+      这是一个<strong>已知的待加固点</strong>（二次开发篇会给出修复方案）。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <table>
+          <tr><th>方法</th><th>职责</th><th>教学点</th></tr>
+          <tr><td>getHost</td><td>查找/创建/恢复</td><td>内存热缓存 + 磁盘冷恢复</td></tr>
+          <tr><td>persistHost</td><td>持久化</td><td>sessionFile 从 runtime 读，createdAt 只记一次</td></tr>
+          <tr><td>newSession / switchToMapping</td><td>生命周期</td><td>切换返回 boolean 表达「目标不存在」</td></tr>
+          <tr><td>abort</td><td>中断</td><td>只影响本 sessionKey，杜绝串线</td></tr>
+          <tr><td>deleteMapping</td><td>删除</td><td>内存磁盘同步清理</td></tr>
+          <tr><td>evictIdle</td><td>回收</td><td>先收集后删除、activeRun 保护、磁盘保留</td></tr>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>在 <code>evictIdle</code> 里如果直接 <code>this.hosts.delete(key)</code> 而不先收集，会发生什么？（提示：Map 迭代时的删除语义）</li>
+          <li>如果进程重启后，用户之前的对话还在吗？是怎么做到的？哪一行代码是关键？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

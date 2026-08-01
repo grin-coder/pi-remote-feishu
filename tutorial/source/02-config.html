@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>02 配置系统 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="02-config.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>02 配置系统</h1>
+        <p>「宽容解析 + 严格补全」——一个值得背下来的配置系统范式。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>理解配置的 4 层优先级：env &lt; 文件 &lt; CLI</li>
+          <li>理解 parsePartialConfig（宽容）与 normalizeConfig（严格）的分工</li>
+          <li>理解 mergeConfig 为什么必须「深合并」子对象</li>
+        </ul>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p><span class="file-path">src/config/schema.ts</span>（233 行，核心）<br>
+        <span class="file-path">src/config/load-config.ts</span>（42 行）</p>
+      </div>
+
+      <h2>1. 配置的层级与优先级</h2>
+<pre><code>优先级高 ──────────────► 优先级低
+CLI 参数  &gt;  项目配置(.pi/feishu.json)  &gt;  用户配置(~/.pi/agent/feishu.json)  &gt;  环境变量</code></pre>
+
+      <p><code>loadConfig</code> 的实现：</p>
+<pre><code>export function loadConfig(options: LoadConfigOptions = {}): FeishuConfig {
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const configPath = findConfigFile(cwd, options.configPath);   // 找配置文件
+  const fileConfig = configPath ? readConfigFile(configPath) : {};
+  const cliConfig = parsePartialConfig(options);                // CLI 参数也走同一套解析
+
+  return normalizeConfig(mergeConfig(envConfig(), fileConfig, cliConfig), cwd);
+}</code></pre>
+
+      <p>合并顺序：<code>env → file → cli</code>，后面的覆盖前面的。这是典型的<strong>配置分层覆盖</strong>模式。</p>
+
+      <h2>2. 为什么「解析」和「校验默认值」要分开</h2>
+      <p>这是 <code>schema.ts</code> 最重要的设计，也是本项目的教学重点。</p>
+
+      <h3>2.1 parsePartialConfig —— 宽容解析「部分配置」</h3>
+<pre><code>export function parsePartialConfig(value: unknown): PartialFeishuConfig {
+  if (!isObject(value)) return {};
+  ...
+  const requireMention = readBoolean(policyValue.requireMention);
+  if (requireMention !== undefined) policy.requireMention = requireMention;
+  ...
+}</code></pre>
+
+      <ul>
+        <li>输入是 <code>unknown</code>（来自 JSON 文件或环境变量，可能是任何形状）</li>
+        <li>内部用 <code>readString</code> / <code>readBoolean</code> / <code>readNumber</code> / <code>readStringArray</code> <strong>逐字段校验类型</strong></li>
+        <li>只保留类型正确的字段；错的字段直接忽略（不抛错）</li>
+        <li>产出的是 <code>PartialFeishuConfig</code>——可能缺字段，但存在的字段类型一定对</li>
+      </ul>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 为什么这样设计？</div>
+        <p>配置文件可能来自用户手写，字段缺失/类型错误很常见。<strong>解析阶段宽容，校验阶段严格</strong>，
+        把「坏数据」在边界处理掉——这就是「边界消化坏输入」原则。</p>
+      </div>
+
+      <h3>2.2 normalizeConfig —— 严格补全默认值</h3>
+<pre><code>export function normalizeConfig(partial: PartialFeishuConfig, cwd: string): FeishuConfig {
+  if (!partial.appId) throw new Error("Missing Feishu appId");
+  if (!partial.appSecret) throw new Error("Missing Feishu appSecret");
+
+  const policy: FeishuPolicyConfig = {
+    requireMention: partial.policy?.requireMention ?? true,   // 可选项补默认值
+    dmEnabled: partial.policy?.dmEnabled ?? true,
+    groupEnabled: partial.policy?.groupEnabled ?? true,
+    ...
+  };
+  ...
+  return { ... };   // 返回完整配置，所有字段都有确定值
+}</code></pre>
+
+      <ul>
+        <li>必填项缺失 → 抛错（appId、appSecret）</li>
+        <li>可选项缺失 → 填默认值（<code>?? 默认</code>）</li>
+        <li><strong>返回的 <code>FeishuConfig</code> 一定是完整的</strong>，下游代码可以直接用 <code>config.policy.requireMention</code> 而不用担心 undefined</li>
+      </ul>
+
+      <h2>3. 典型默认值</h2>
+      <table>
+        <tr><th>配置</th><th>默认值</th><th>说明</th></tr>
+        <tr><td><code>policy.requireMention</code></td><td><code>true</code></td><td>群聊必须 @ 机器人</td></tr>
+        <tr><td><code>policy.dmEnabled</code></td><td><code>true</code></td><td>私聊开启</td></tr>
+        <tr><td><code>sessions.groupScope</code></td><td><code>"shared-chat"</code></td><td>群共享会话</td></tr>
+        <tr><td><code>sessions.idleTtlMs</code></td><td><code>30 * 60 * 1000</code></td><td>30 分钟空闲回收</td></tr>
+        <tr><td><code>rendering.mode</code></td><td><code>"stream-card"</code></td><td>流式卡片</td></tr>
+        <tr><td><code>files.maxUploadBytes</code></td><td><code>20 * 1024 * 1024</code></td><td>20MB 上传限制</td></tr>
+      </table>
+
+      <h2>4. mergeConfig：深一层合并</h2>
+<pre><code>export function mergeConfig(...configs: PartialFeishuConfig[]): PartialFeishuConfig {
+  const merged: PartialFeishuConfig = {};
+  for (const config of configs) {
+    Object.assign(merged, {
+      ...config,
+      policy: { ...merged.policy, ...config.policy },      // 嵌套对象要逐层展开合并
+      sessions: { ...merged.sessions, ...config.sessions },
+      rendering: { ...merged.rendering, ...config.rendering },
+      files: { ...merged.files, ...config.files },
+      webhook: { ...merged.webhook, ...config.webhook },
+    });
+  }
+  return merged;
+}</code></pre>
+
+      <div class="callout warn">
+        <div class="callout-title">⚠️ 浅合并的坑</div>
+        <p>普通浅合并会把子对象整个覆盖。比如 env 里设了 <code>policy.requireMention</code>，
+        文件里设了 <code>policy.dmEnabled</code>，浅合并会导致文件里的 policy 把 env 的 policy 整个盖掉，丢字段。
+        这里对 5 个子对象<strong>逐层展开</strong>合并，保证子对象字段也按优先级叠加。</p>
+      </div>
+
+      <h2>5. 环境变量与配置文件查找</h2>
+<pre><code>// 环境变量只覆盖「凭证类」字段
+function envConfig(): PartialFeishuConfig {
+  return parsePartialConfig({
+    appId: process.env.FEISHU_APP_ID,
+    appSecret: process.env.FEISHU_APP_SECRET,
+    ...
+  });
+}
+
+// 只找一个配置文件：显式 &gt; 项目级 &gt; 用户级
+function findConfigFile(cwd: string, explicitPath?: string): string | undefined {
+  if (explicitPath) return resolve(explicitPath);
+  const projectPath = join(cwd, ".pi", "feishu.json");
+  if (existsSync(projectPath)) return projectPath;
+  const userPath = defaultUserConfigPath();   // ~/.pi/agent/feishu.json
+  if (existsSync(userPath)) return userPath;
+  return undefined;
+}</code></pre>
+
+      <p>凭证不适合写进配置文件进版本库，所以放环境变量。文件之间不合并，文件整体作为一个层级参与合并。</p>
+
+      <h2>6. 数据流总结</h2>
+<pre><code>环境变量 ─┐
+配置文件 ─┼─► parsePartialConfig（逐字段校验类型）─┐
+CLI 参数 ─┘                                        ├─► mergeConfig（分层覆盖）─► normalizeConfig（补默认值）─► FeishuConfig</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <table>
+          <tr><th>概念</th><th>实现</th></tr>
+          <tr><td>宽容解析</td><td>parsePartialConfig：坏字段忽略，好字段保留</td></tr>
+          <tr><td>严格补全</td><td>normalizeConfig：必填缺失抛错，可选填默认值</td></tr>
+          <tr><td>分层覆盖</td><td>env &lt; 文件 &lt; CLI</td></tr>
+          <tr><td>深合并</td><td>子对象逐层展开，不丢字段</td></tr>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>给配置加一个新字段 <code>policy.allowGroups?: string[]</code>（只允许特定群聊），需要改哪些文件、哪些函数？试着在本地实现并跑通 <code>npm test</code>。</li>
+          <li>为什么 <code>parsePartialConfig</code> 返回的是 <code>Partial</code> 类型？如果直接返回完整类型会有什么问题？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

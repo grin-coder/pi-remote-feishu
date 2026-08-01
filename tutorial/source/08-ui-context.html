@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>08 UI 桥接与权限确认 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="08-ui-context.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>08 UI 桥接与权限确认</h1>
+        <p>把 Pi 的 UI 调用翻译成飞书卡片，再把用户点击翻译回 Promise——全项目最亮眼的设计。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>理解「异步请求挂起、等远程用户响应」的 pendingDialogs 模式</li>
+          <li>掌握 select 的四种退出路径（必须全部兜底）</li>
+          <li>理解大接口的务实实现策略：空实现 + 显式失败</li>
+        </ul>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p><span class="file-path">src/bridge/ui-context.ts</span>（135 行）</p>
+      </div>
+
+      <h2>1. 这是什么</h2>
+      <p>Pi 的扩展系统给插件提供了一个 <code>ExtensionUIContext</code>，让插件能：
+      <code>ctx.ui.confirm()</code>（确认）、<code>ctx.ui.select()</code>（选择）、<code>ctx.ui.notify()</code>（通知）……</p>
+      <p>在终端里，这些会弹出 TUI 交互。但我们的场景是飞书——<strong>用户根本不看终端</strong>。</p>
+      <p><code>ui-context.ts</code> 做的事就是：<strong>把 Pi 的 UI 调用翻译成飞书卡片，再把用户点击翻译回 Promise 的结果</strong>。</p>
+
+<pre><code>Pi 工具调用 ctx.ui.confirm("是否执行危险命令？")
+  └─► 飞书卡片「Permission required - 是否执行危险命令？ [Yes] [No]」
+        └─► 用户点 Yes
+              └─► Promise resolve("Yes")
+                    └─► 工具继续执行</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 价值</div>
+        <p><strong>一个在终端里的同步确认流程，被无缝搬到远程飞书上。</strong>
+        Pi 生态里已有的全部权限交互能力，飞书用户也能用，不用为飞书重新实现一套权限系统。</p>
+      </div>
+
+      <h2>2. 核心机制：pendingDialogs</h2>
+<pre><code>interface PendingDialog {
+  resolve(value: string | undefined): void;
+  timer: ReturnType&lt;typeof setTimeout&gt;;
+}
+
+const pendingDialogs = new Map&lt;string, PendingDialog&gt;();</code></pre>
+
+      <p><strong>一个「等待中的对话框」注册表</strong>：dialogId → resolve 函数 + 超时定时器。
+      这是「异步请求挂起、等远程用户响应」的标准模式。</p>
+
+      <h2>3. select：发卡片并挂起</h2>
+<pre><code>async select(title, options, opts) {
+  const context = getFeishuContext();          // ① 从异步上下文拿当前 chat
+  if (!context) return options[0];             // 没有飞书上下文 → 返回默认选项
+
+  const dialogId = randomUUID();               // ② 唯一 id
+  const timeout = opts?.timeout ?? 60_000;
+
+  return await new Promise&lt;string | undefined&gt;((resolve) =&gt; {
+    // ③ 注册挂起对话框
+    const timer = setTimeout(() =&gt; {
+      pendingDialogs.delete(dialogId);
+      resolve(undefined);                      // 超时 → resolve(undefined)
+    }, timeout);
+    pendingDialogs.set(dialogId, { resolve, timer });
+
+    // ④ 支持 AbortSignal（调用方取消）
+    if (opts?.signal) {
+      if (opts.signal.aborted) {
+        pendingDialogs.delete(dialogId);
+        clearTimeout(timer);
+        resolve(undefined);
+        return;
+      }
+      opts.signal.addEventListener("abort", () =&gt; {
+        pendingDialogs.delete(dialogId);
+        clearTimeout(timer);
+        resolve(undefined);
+      }, { once: true });
+    }
+
+    // ⑤ 发飞书卡片
+    context.channel.sendCard(context.chatId, buildPermissionCard(title, options, dialogId)).catch(() =&gt; {
+      pendingDialogs.delete(dialogId);
+      clearTimeout(timer);
+      resolve(undefined);                      // 发卡失败也不能挂死
+    });
+  });
+}</code></pre>
+
+      <h3>3.1 四种退出路径（教学重点）</h3>
+      <p><code>Promise</code> 必须保证<strong>一定会 resolve</strong>，否则工具会永久挂起。这里有四条路径：</p>
+      <table>
+        <tr><th>路径</th><th>触发</th><th>结果</th></tr>
+        <tr><td>正常</td><td>用户点卡片按钮</td><td>resolve(选项值)</td></tr>
+        <tr><td>超时</td><td>60 秒无人点</td><td>resolve(undefined)</td></tr>
+        <tr><td>取消</td><td>AbortSignal 触发</td><td>resolve(undefined)</td></tr>
+        <tr><td>发卡失败</td><td>sendCard 抛错</td><td>resolve(undefined)</td></tr>
+      </table>
+
+      <div class="callout danger">
+        <div class="callout-title">⚠️ 黄金法则</div>
+        <p><strong>所有异步 UI 挂起都必须有超时和失败兜底</strong>，这是远程 UI 桥接的黄金法则。</p>
+      </div>
+
+      <h2>4. confirm：用 select 组合</h2>
+<pre><code>async confirm(title, message, opts) {
+  const text = message ? `${title}\n\n${message}` : title;
+  const choice = await this.select(text, ["Yes", "No"], opts);
+  return choice === "Yes";
+}</code></pre>
+
+      <p>confirm 就是只有两个选项的 select。<strong>组合而非重复实现。</strong></p>
+
+      <h2>5. resolvePermissionCardAction：卡片回调入口</h2>
+      <p>用户点按钮后，飞书回调进 <code>card-actions.ts</code> → <code>cmd === "permission"</code> 分支：</p>
+<pre><code>export function resolvePermissionCardAction(value: Record&lt;string, unknown&gt;): string | undefined {
+  const dialogId = typeof value.dialogId === "string" ? value.dialogId : undefined;
+  if (!dialogId) return undefined;
+  const pending = pendingDialogs.get(dialogId);
+  if (!pending) return undefined;
+  pendingDialogs.delete(dialogId);            // ① 从注册表移除（一次性）
+  clearTimeout(pending.timer);                // ② 取消超时
+  const choice = typeof value.choice === "string" ? value.choice : undefined;
+  pending.resolve(choice);                    // ③ 唤醒挂起的 Promise
+  return choice;
+}</code></pre>
+
+      <p>三件事：<strong>删注册、清定时器、resolve</strong>。顺序很重要——先删后 resolve，保证不会二次触发。</p>
+
+      <h2>6. notify：单向通知</h2>
+<pre><code>notify(message, type) {
+  const context = getFeishuContext();
+  if (!context) return;
+  const prefix = type === "error" ? "Error: " : type === "warning" ? "Warning: " : "";
+  context.channel.sendText(context.chatId, `${prefix}${message}`).catch(() =&gt; {});
+}</code></pre>
+
+      <p>不需要挂起，发一条文本即可。<code>.catch(() =&gt; {})</code> 保证通知失败不影响主流程。</p>
+
+      <h2>7. 空实现：其余 UI 方法</h2>
+<pre><code>input() { return undefined; }
+onTerminalInput() { return () =&gt; {}; }
+setStatus() {}
+...
+custom() { throw new Error("Custom UI is not available in Feishu mode"); }
+getTheme() { return undefined; }
+setTheme() { return { success: false, error: "Themes are not available in Feishu mode" }; }</code></pre>
+
+      <p><code>ExtensionUIContext</code> 接口方法很多，飞书模式下大部分<strong>没有意义</strong>（终端 UI 专属）。处理策略：</p>
+      <ul>
+        <li><strong>无意义但安全的</strong> → 空实现</li>
+        <li><strong>无法支持的</strong>（custom UI、主题）→ 显式抛错/返回错误对象</li>
+      </ul>
+      <div class="callout tip">
+        <div class="callout-title">💡 教学点</div>
+        <p>实现一个大型接口时，对不支持的成员用「<strong>显式失败</strong>」而非「静默忽略」，
+        这样调用方会立刻知道该能力在飞书下不可用，而不是陷入莫名其妙的 bug。</p>
+      </div>
+
+      <h2>8. 完整闭环</h2>
+<pre><code>工具执行 → ctx.ui.confirm(...)
+  → select() 从 AsyncLocalStorage 拿到 FeishuContext
+  → pendingDialogs.set(dialogId, ...)
+  → channel.sendCard(chatId, permission卡{cmd:"permission", dialogId, choice:"Yes"})
+      │
+      ▼ （用户点按钮）
+  channel.onCardAction
+  → handleCardAction
+  → cmd === "permission"
+  → resolvePermissionCardAction(value)  ← 从按钮 value 里读 dialogId + choice
+  → pending.resolve("Yes")
+      │
+      ▼
+  select 的 Promise 完成 → confirm 返回 true → 工具继续执行</code></pre>
+
+      <h2>9. 注意点</h2>
+      <ol>
+        <li><strong>卡片动作与消息的并发</strong>：如果 SDK 串行处理同一 chat 的消息和卡片动作，确认可能被卡住。项目已在 channel.ts 关闭 SDK chatQueue（见通道层一章），保证卡片动作能立刻处理。</li>
+        <li><strong>dialog 是进程内的</strong>：<code>pendingDialogs</code> 是模块级 Map，多进程部署时无法共享（单进程 MVP 没问题）。</li>
+        <li><strong>多会话安全</strong>：<code>getFeishuContext()</code> 返回的是当前 run 的 chatId，所以 A 会话的权限卡绝不会被 B 会话的用户点掉——<strong>对话框天然绑定对话上下文</strong>。</li>
+      </ol>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <table>
+          <tr><th>方法</th><th>机制</th><th>教学点</th></tr>
+          <tr><td>select</td><td>发卡 + 挂起 Promise</td><td>四种退出路径兜底</td></tr>
+          <tr><td>confirm</td><td>select 的组合</td><td>组合优于重复</td></tr>
+          <tr><td>notify</td><td>单向文本</td><td>失败不阻塞</td></tr>
+          <tr><td>resolve</td><td>删注册→清定时器→resolve</td><td>一次性语义</td></tr>
+          <tr><td>其他方法</td><td>空实现 / 显式失败</td><td>大接口的务实实现策略</td></tr>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>为什么 select 里「没有 FeishuContext 就返回 <code>options[0]</code>」？这个默认值选择合理吗？</li>
+          <li>如果用户 60 秒后才点按钮（超时之后），会发生什么？会 double-resolve 吗？为什么不会？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

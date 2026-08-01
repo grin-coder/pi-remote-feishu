@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03 面试可演示改造题 · pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="interview" data-chapter="03-labs.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第三部分 · 面试准备</span>
+        <h1>03 面试可演示改造题</h1>
+        <p>准备几个“能讲、能改、能验证”的小改造，用来证明你真正理解这个项目。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">面试演示原则</div>
+        <p>不要现场做大功能。选择能在 10 到 20 分钟内说清楚影响面的改造题，重点展示定位能力、边界判断和验证意识。</p>
+      </div>
+
+      <h2>改造题 1：新增一个只读命令</h2>
+      <h3>目标</h3>
+      <p>新增 <code>/whoami</code>，返回当前飞书用户、chatId、sessionKey 和群聊隔离模式。</p>
+      <h3>为什么适合面试</h3>
+      <p>它能展示命令链路：消息归一化、命令分发、卡片或文本回复，同时不会引入复杂业务。</p>
+      <h3>改动范围</h3>
+      <table>
+        <tr><th>文件</th><th>改什么</th></tr>
+        <tr><td><code>src/types.ts</code></td><td>扩展命令名联合类型</td></tr>
+        <tr><td><code>src/bridge/message-normalizer.ts</code></td><td>识别新命令</td></tr>
+        <tr><td><code>src/bridge/message-handler.ts</code></td><td>增加命令处理分支</td></tr>
+        <tr><td><code>test/*</code></td><td>覆盖命令解析和回复行为</td></tr>
+      </table>
+      <h3>面试话术</h3>
+      <p>“我先选只读命令验证扩展点，因为它不碰 runtime，不碰外部文件，也不改变会话状态。这样可以快速证明命令系统的可扩展性。”</p>
+
+      <h2>改造题 2：给群聊增加静默模式</h2>
+      <h3>目标</h3>
+      <p>新增配置：群聊里只有被 @ 时回复；私聊始终回复。未 @ 的群消息只记录 debug，不发提示。</p>
+      <h3>为什么适合面试</h3>
+      <p>它能展示产品体验和消息噪声控制。群机器人如果对每句话都回复，会严重打扰群聊。</p>
+      <h3>改动范围</h3>
+      <table>
+        <tr><th>文件</th><th>改什么</th></tr>
+        <tr><td><code>src/config/schema.ts</code></td><td>配置默认值和校验</td></tr>
+        <tr><td><code>src/bridge/conversation-router.ts</code></td><td>根据群聊策略决定 accepted</td></tr>
+        <tr><td><code>test/conversation-router.test.ts</code></td><td>覆盖 @ 和未 @ 两种路径</td></tr>
+      </table>
+      <h3>面试话术</h3>
+      <p>“这不是简单 if 判断，而是路由层的责任。是否接受消息应该在进入 runtime 前决定，否则后面附件下载、session 创建都会产生无意义成本。”</p>
+
+      <h2>改造题 3：增加文档读取 skill 开关</h2>
+      <h3>目标</h3>
+      <p>把 <code>lark-doc-cli</code> skill 做成配置开关：默认自动检测，用户也可以显式关闭。</p>
+      <h3>为什么适合面试</h3>
+      <p>它能展示你对 tool 和 skill 的边界理解：不是所有能力都要常驻进上下文。</p>
+      <h3>改动范围</h3>
+      <table>
+        <tr><th>文件</th><th>改什么</th></tr>
+        <tr><td><code>src/types.ts</code></td><td>新增 skill 配置类型</td></tr>
+        <tr><td><code>src/config/schema.ts</code></td><td>增加默认策略</td></tr>
+        <tr><td><code>src/extensions/index.ts</code></td><td>根据配置和 lark-cli 检测结果加载 skill</td></tr>
+        <tr><td><code>src/extensions/lark-cli-guard.ts</code></td><td>保持 IM 写操作拦截</td></tr>
+      </table>
+      <h3>面试话术</h3>
+      <p>“我把 lark-cli 当成可选增强，不把它变成安装门槛。核心桥接能力不依赖 CLI，CLI 只在用户环境具备时补充文档和只读查询能力。”</p>
+
+      <h2>改造题 4：增强文件发送安全</h2>
+      <h3>目标</h3>
+      <p>给 <code>send_file_to_chat</code> 增加 MIME 白名单，避免只靠路径和大小判断。</p>
+      <h3>为什么适合面试</h3>
+      <p>它能展示你把模型输出视为不可信输入。安全不是单点校验，而是多层限制。</p>
+      <h3>改动范围</h3>
+      <table>
+        <tr><th>文件</th><th>改什么</th></tr>
+        <tr><td><code>src/types.ts</code></td><td>新增 <code>allowedMimeTypes</code></td></tr>
+        <tr><td><code>src/config/schema.ts</code></td><td>默认白名单</td></tr>
+        <tr><td><code>src/tools/send-file-to-chat.ts</code></td><td>在发送前检测 MIME</td></tr>
+        <tr><td><code>test/send-file-to-chat.test.ts</code></td><td>覆盖允许和拒绝路径</td></tr>
+      </table>
+      <h3>面试话术</h3>
+      <p>“这个改造不会改变工具的职责，只是在原有路径白名单和大小限制上增加一层内容类型校验。它是增强而不是重构。”</p>
+
+      <h2>改造题 5：多进程部署方案设计</h2>
+      <h3>目标</h3>
+      <p>不一定现场实现，但要能讲清楚如果部署成多个 worker，需要迁移哪些状态。</p>
+      <h3>关键点</h3>
+      <table>
+        <tr><th>当前实现</th><th>多进程问题</th><th>演进方案</th></tr>
+        <tr><td>内存里的 <code>SessionHostManager</code></td><td>同一 sessionKey 可能落到不同 worker</td><td>一致性哈希或单 key 路由</td></tr>
+        <tr><td>内存里的 pendingDialogs</td><td>发卡和点卡可能不在同一进程</td><td>Redis 或共享状态表</td></tr>
+        <tr><td>JSON store</td><td>文件锁和跨进程竞争复杂</td><td>SQLite/Postgres</td></tr>
+        <tr><td>进程内 activeRun</td><td>/stop 找不到对应任务</td><td>sessionKey 固定路由到同一 worker</td></tr>
+      </table>
+      <h3>面试话术</h3>
+      <p>“多进程不是简单把 Map 换 Redis。关键是 active run 和 runtime 本身仍在某个 worker 内，所以需要先保证同一个 sessionKey 被路由到同一个 worker。”</p>
+
+      <div class="callout tip">
+        <div class="callout-title">本节小结</div>
+        <p>准备三个可演示改造即可：一个命令扩展、一个配置策略、一个安全增强。再准备一个多进程设计题，用来应对系统设计追问。</p>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 源码地图 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="01-source-map.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>01 源码地图</h1>
+        <p>从哪里开始读？按什么顺序读？每个模块和测试怎么对应？</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>知道第二部分每章对应哪些源码文件</li>
+          <li>掌握推荐的阅读顺序（由简到难、由独立到耦合）</li>
+          <li>了解测试文件如何作为「行为说明书」使用</li>
+        </ul>
+      </div>
+
+      <h2>1. 推荐的阅读顺序</h2>
+      <p>第二部分按照「<strong>从简单独立 → 到核心耦合</strong>」的顺序编排：</p>
+
+      <table>
+        <tr><th>章节</th><th>源码文件</th><th>难度</th><th>为什么放这里</th></tr>
+        <tr><td>02 配置系统</td><td>config/schema.ts、load-config.ts</td><td>⭐</td><td>零依赖，先热身</td></tr>
+        <tr><td>03 通道层</td><td>feishu/channel.ts、context.ts、webhook.ts</td><td>⭐</td><td>只依赖 SDK 和 types，理解边界</td></tr>
+        <tr><td>04 路由与归一化</td><td>bridge/conversation-router.ts、message-normalizer.ts</td><td>⭐⭐</td><td>纯函数逻辑，测试驱动理解</td></tr>
+        <tr><td>05 会话管理</td><td>bridge/session-host-manager.ts</td><td>⭐⭐⭐</td><td>第一个「有状态」核心模块</td></tr>
+        <tr><td>06 运行时封装</td><td>bridge/runtime-host.ts</td><td>⭐⭐⭐⭐</td><td>最复杂：对接 Pi SDK 全家桶</td></tr>
+        <tr><td>07 流式渲染</td><td>bridge/stream-renderer.ts</td><td>⭐⭐⭐</td><td>流式状态机的经典范式</td></tr>
+        <tr><td>08 UI 桥接</td><td>bridge/ui-context.ts</td><td>⭐⭐⭐</td><td>Promise 挂起 + 远程回调</td></tr>
+        <tr><td>09 卡片系统</td><td>cards/*.ts、bridge/card-actions.ts</td><td>⭐⭐</td><td>把交互串起来</td></tr>
+        <tr><td>10 附件处理</td><td>attachments/*.ts</td><td>⭐⭐</td><td>输入预处理决策树</td></tr>
+        <tr><td>11 文件回传工具</td><td>tools/send-file-to-chat.ts</td><td>⭐⭐</td><td>AsyncLocalStorage 的实际应用</td></tr>
+        <tr><td>12 存储</td><td>store/store.ts、json-store.ts</td><td>⭐⭐</td><td>接口抽象 + 并发写</td></tr>
+        <tr><td>13 入口与扩展</td><td>bin/pi-feishu.ts、extensions/index.ts</td><td>⭐⭐</td><td>最后看，因为它是组合根</td></tr>
+        <tr><td>14 测试与二次开发</td><td>test/*.ts、package.json</td><td>⭐</td><td>收尾 + 实践指南</td></tr>
+      </table>
+
+      <h2>2. 测试作为「行为说明书」</h2>
+      <p>这个项目的测试写得非常干净，<strong>先读测试，再读实现</strong>是最高效的方式——测试告诉你「函数应该怎样表现」，实现告诉你「它是怎么做到的」。</p>
+
+      <table>
+        <tr><th>测试文件</th><th>验证的行为</th></tr>
+        <tr><td>prompt-queue.test.ts</td><td>同队列串行 / 跨队列独立</td></tr>
+        <tr><td>conversation-router.test.ts</td><td>私聊/群聊/群按用户/未 @ 拒绝</td></tr>
+        <tr><td>message-normalizer.test.ts</td><td>命令识别、去 @、prompt 拼装</td></tr>
+        <tr><td>card-actions.test.ts</td><td>卡片动作分发、身份恢复</td></tr>
+        <tr><td>attachments.test.ts</td><td>附件分类决策树（mock channel）</td></tr>
+        <tr><td>send-file-to-chat.test.ts</td><td>文件校验、发送（mock channel）</td></tr>
+        <tr><td>json-store.test.ts</td><td>CRUD、过滤、损坏降级、并发写</td></tr>
+        <tr><td>config.test.ts</td><td>配置解析合并默认值</td></tr>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 为什么绝大多数测试不依赖飞书？</div>
+        <p>因为 <code>FeishuChannel</code> 是<strong>接口</strong>。mock 一个接口比 mock 整个 SDK 容易得多。
+        这就是「依赖抽象而非实现」的直接回报——也是你写项目时应该学的。</p>
+      </div>
+
+      <h2>3. 阅读工具建议</h2>
+      <ul>
+        <li><strong>VS Code</strong>：打开项目后按 <code>Ctrl+P</code> 输入文件名快速跳转</li>
+        <li><strong>F12 / Cmd+点击</strong>：跳转到类型定义，追接口实现</li>
+        <li><strong>跑测试</strong>：改代码后 <code>npm test</code> 快速验证你的理解</li>
+      </ul>
+
+      <h2>4. 每个源码模块的「一句话职责」</h2>
+      <table>
+        <tr><th>文件</th><th>一句话职责</th></tr>
+        <tr><td>types.ts</td><td>全项目类型契约，是「地基中的地基」</td></tr>
+        <tr><td>prompt-queue.ts</td><td>26 行实现串行队列（Promise 链）</td></tr>
+        <tr><td>feishu/context.ts</td><td>13 行实现 AsyncLocalStorage 上下文</td></tr>
+        <tr><td>cards/common.ts</td><td>卡片基础组件（文本/按钮/下拉）</td></tr>
+        <tr><td>attachments/mime.ts</td><td>MIME 推断 + 文本判断（19 行）</td></tr>
+        <tr><td>feishu/webhook.ts</td><td>4 行的语义化占位</td></tr>
+        <tr><td>store/store.ts</td><td>存储工厂（12 行）</td></tr>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <p>第二部分一共 14 章，按「简单 → 复杂 → 组合」编排。
+        每章建议配合 <code>npm test</code> 里的对应测试一起读。</p>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>先读 <code>test/conversation-router.test.ts</code>，预测 <code>routeConversation</code> 的行为，再去读实现验证。</li>
+          <li>打开 <code>src/types.ts</code>，把所有 interface 列出来，猜猜哪个是「被引用最多」的？</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

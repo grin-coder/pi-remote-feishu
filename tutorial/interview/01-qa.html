@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01 面试主线问答 · pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="interview" data-chapter="01-qa.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第三部分 · 面试准备</span>
+        <h1>01 面试主线问答</h1>
+        <p>把项目讲成一个完整的工程故事：场景、架构、关键取舍、风险控制和演进路线。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">使用方式</div>
+        <p>面试里不建议从文件目录开始背源码。更好的表达顺序是：为什么做、核心链路怎么走、哪里体现设计能力、有什么边界和下一步。</p>
+      </div>
+
+      <h2>一、开场定位</h2>
+
+      <h3>Q1: 用一句话介绍这个项目</h3>
+      <p><strong>参考回答：</strong><code>pi-remote-feishu</code> 是一个把飞书聊天接入 Pi Agent 的远程控制扩展。用户可以在手机或飞书客户端里通过私聊、群聊唤醒本机 Pi Agent，Agent 的流式回复、权限确认、文件回传都会映射回飞书。</p>
+      <p><strong>面试重点：</strong>它不是简单的发消息脚本，而是一个 transport host + Pi extension 的组合：一边负责飞书连接和消息编排，一边负责给 Pi 注入工具、命令和提示词能力。</p>
+
+      <h3>Q2: 这个项目解决的核心矛盾是什么</h3>
+      <p><strong>参考回答：</strong>Pi 原生更像本地终端里的单用户会话，而飞书天然是多用户、多群、多入口的异步聊天场景。核心矛盾是：如何在不修改 Pi 核心代码的情况下，把多路飞书消息安全地映射到相互隔离的 Pi 会话里。</p>
+
+      <h3>Q3: 为什么这个项目适合作为面试项目</h3>
+      <p><strong>参考回答：</strong>因为它不是 CRUD。它包含外部平台接入、事件驱动、并发隔离、流式渲染、远程 UI 交互、权限确认、文件安全和扩展机制，能展示系统设计、边界意识和工程落地能力。</p>
+
+      <h2>二、核心架构</h2>
+
+      <h3>Q4: 整体链路怎么走</h3>
+<pre><code>飞书用户消息
+  -> FeishuChannel(WebSocket)
+  -> routeConversation 计算 sessionKey
+  -> SessionHostManager 获取对应 SessionHost
+  -> processAttachments 处理附件
+  -> normalizeMessage 生成 Pi prompt
+  -> PromptQueue 按会话串行化
+  -> RuntimeHost 调用 Pi Agent
+  -> StreamRenderer 把事件流更新回飞书卡片
+</code></pre>
+      <p><strong>面试重点：</strong>这条链路可以解释清楚边界：transport 只关心飞书，bridge 只关心编排，runtime 只关心 Pi，cards 只负责展示。</p>
+
+      <h3>Q5: 为什么要分成 transport host 和 Pi extension 两个入口</h3>
+      <p><strong>参考回答：</strong>飞书 WebSocket 是一个长期运行的外部进程，它负责收发消息；Pi extension 是被 Pi 加载的能力包，它负责注册工具、命令和提示词。两者生命周期不同，所以不能混成一个入口。这样别人既可以单独启动飞书桥接服务，也可以把扩展装进 Pi 里复用工具能力。</p>
+
+      <h3>Q6: 最重要的设计对象是什么</h3>
+      <p><strong>参考回答：</strong><code>SessionHost</code>。每个 <code>sessionKey</code> 对应一个 SessionHost，里面持有独立的 <code>AgentSessionRuntime</code>、<code>PromptQueue</code> 和 <code>activeRun</code>。这保证不同私聊和群聊不会串上下文、不会互相停止、不会把回复发错地方。</p>
+
+      <h2>三、会话与并发</h2>
+
+      <h3>Q7: 私聊和群聊如何隔离</h3>
+      <table>
+        <tr><th>场景</th><th>sessionKey</th><th>含义</th></tr>
+        <tr><td>私聊</td><td><code>dm:{userOpenId}</code></td><td>每个用户独立上下文</td></tr>
+        <tr><td>群聊共享</td><td><code>group:{chatId}</code></td><td>一个群共享一个上下文，适合协作</td></tr>
+        <tr><td>群聊按人隔离</td><td><code>group-user:{chatId}:{userOpenId}</code></td><td>同群里每个人独立上下文</td></tr>
+      </table>
+      <p><strong>面试重点：</strong>这里的隔离粒度是产品选择，不只是技术选择。默认群聊共享上下文更符合协作体验，同时保留 per-user 配置。</p>
+
+      <h3>Q8: 多用户会有并发问题吗</h3>
+      <p><strong>参考回答：</strong>会，所以设计上用了 per-session queue。同一个 sessionKey 内串行，避免上下文被并发写乱；不同 sessionKey 之间并行，避免一个群聊的长任务阻塞所有私聊。锁的粒度和会话隔离粒度保持一致。</p>
+
+      <h3>Q9: 为什么不能只有一个全局 Pi Session</h3>
+      <p><strong>参考回答：</strong>一个全局 session 会导致五类问题：A 的消息进入 B 的上下文、群聊和私聊互相污染、/stop 停错任务、权限卡片发错人、流式回复发错 chat。飞书场景必须把 Pi 的“单会话模型”提升成“多会话管理模型”。</p>
+
+      <h3>Q10: /stop 如何保证只停止当前会话</h3>
+      <p><strong>参考回答：</strong><code>activeRun</code> 存在对应的 SessionHost 内，而不是全局变量。收到 <code>/stop</code> 或 stop 卡片动作时，先根据飞书上下文算出 sessionKey，再只 abort 这个 key 对应的 active run。</p>
+
+      <h2>四、飞书交互</h2>
+
+      <h3>Q11: 为什么要用卡片而不是纯文本</h3>
+      <p><strong>参考回答：</strong>卡片能承载状态和操作。比如“处理中”卡片可以原地更新成“完成”或“失败”，还可以放停止按钮；模型选择、会话管理、权限确认也天然适合卡片。纯文本会造成刷屏，而且交互能力不足。</p>
+
+      <h3>Q12: Pi 的权限确认怎么映射到飞书</h3>
+      <p><strong>参考回答：</strong>把 Pi 的 <code>ExtensionUIContext.confirm/select</code> 适配成飞书交互卡片。发卡片时注册一个 pending dialog，用户点击按钮后通过 card action 找到对应 dialog 并 resolve Promise。这样 Pi 仍然以同步等待 UI 的方式写逻辑，但真实 UI 发生在飞书。</p>
+
+      <h3>Q13: 为什么需要 AsyncLocalStorage</h3>
+      <p><strong>参考回答：</strong>模型调用工具时，工具函数本身拿不到当前飞书 chatId。<code>AsyncLocalStorage</code> 可以在“一次飞书消息触发的一整条异步调用链”里传递当前 channel、chatId、config。这样 <code>send_file_to_chat</code> 不需要污染 Pi SDK 的工具参数，也不会用全局变量导致并发串线。</p>
+
+      <h2>五、工具、技能与安全</h2>
+
+      <h3>Q14: send_file_to_chat 是什么</h3>
+      <p><strong>参考回答：</strong>它是这个扩展注册给 Pi 的工具，不是飞书官方 CLI 的现成功能。模型生成文件后，可以主动调用这个工具把文件发回当前飞书 chat。工具内部会校验路径白名单、文件类型和大小，防止模型把不该发的文件发出去。</p>
+
+      <h3>Q15: 为什么引入 lark-cli skill 还要做防护</h3>
+      <p><strong>参考回答：</strong>lark-cli skill 适合让 Agent 查询或操作飞书文档、表格、IM 只读信息，但 IM 发送必须保持单一出口，否则 Agent 可能既通过桥接服务回消息，又通过 lark-cli 再发一条消息，造成重复发送或越权发送。所以扩展里只在检测到 lark-cli 已安装时加载相关 skill，并通过提示词和 bash guard 禁止 IM 写操作。</p>
+
+      <h3>Q16: 附件如何处理</h3>
+      <p><strong>参考回答：</strong>图片会转成 Pi 支持的 image input；小文本文件会展开到 prompt；大文件会落到临时目录，并在 prompt 里写明路径和说明。这样既能让模型直接理解轻量内容，也避免把大文件塞满上下文。</p>
+
+      <h2>六、边界与演进</h2>
+
+      <h3>Q17: 为什么 v1 不做多租户</h3>
+      <p><strong>参考回答：</strong>当前目标是一个飞书应用服务一个团队，真实需求是私聊和群聊，而不是多个企业租户的计费、隔离和路由。多租户会引入 tenant router、tenant policy、租户级 store 和鉴权复杂度。v1 只保留 tenantKey 字段，不承担完整多租户成本。</p>
+
+      <h3>Q18: JSON store 的作用是什么</h3>
+      <p><strong>参考回答：</strong>它不保存 Pi 的完整对话历史，Pi 自己管理真实 session 文件。这个 store 只保存“飞书身份/sessionKey -> Pi session 文件”的映射，以及当前会话选择等轻量状态。它是桥接层的索引，不是 Agent 记忆本体。</p>
+
+      <h3>Q19: Webhook 没实现会影响群聊吗</h3>
+      <p><strong>参考回答：</strong>不影响当前群聊功能。v1 用飞书 WebSocket 长连接收事件，群聊和私聊都走这条通道。Webhook 是另一种事件接入方式，适合公网回调或企业内网网关场景，后续只要实现同一个 channel 接口即可。</p>
+
+      <h3>Q20: 项目目前最大的改进空间是什么</h3>
+      <p><strong>参考回答：</strong>可以从三层演进：可靠性上增加 WebSocket 重连、消息幂等和失败补偿；能力上把云文档、表格、群成员查询封装成按需 skill/tool；规模上把 JSON store 和进程内 pending dialog 迁移到外部存储，支持多进程部署。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">本节小结</div>
+        <p>面试时优先讲清楚四件事：多会话隔离、per-session queue、飞书卡片 UI 桥接、受控文件回传。源码细节放在追问里展开，不要一上来就背文件名。</p>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

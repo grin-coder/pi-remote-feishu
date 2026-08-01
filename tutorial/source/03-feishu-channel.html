@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03 通道层 feishu/ — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="source" data-chapter="03-feishu-channel.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第二部分 · 源码解读</span>
+        <h1>03 通道层 feishu/</h1>
+        <p>飞书世界的入口和出口：channel 封装、context 魔法、webhook 占位。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>理解通道层「归一化边界」的设计：把 SDK 的混乱挡在边界外</li>
+          <li>知道为什么关闭 SDK 内部的 chatQueue</li>
+          <li>理解 context.ts 如何用 13 行实现异步上下文</li>
+        </ul>
+      </div>
+
+      <div class="callout note">
+        <div class="callout-title">📂 本节源码</div>
+        <p><span class="file-path">src/feishu/channel.ts</span>（242 行）<br>
+        <span class="file-path">src/feishu/context.ts</span>（13 行）<br>
+        <span class="file-path">src/feishu/webhook.ts</span>（4 行）</p>
+      </div>
+
+      <h2>1. 通道层的作用</h2>
+      <p>职责单一，就两件事：</p>
+      <ul>
+        <li><strong>入口</strong>：接收消息、卡片动作、错误</li>
+        <li><strong>出口</strong>：发送文本/markdown/卡片/文件/图片，更新卡片，下载附件</li>
+      </ul>
+      <p>它是一层「皮」——内部用飞书 SDK，对外暴露本项目自己的类型，<strong>调用方永远看不到飞书 SDK 的原始结构</strong>。</p>
+
+      <h2>2. createFeishuChannel：SDK 封装</h2>
+
+      <h3>2.1 创建底层通道</h3>
+<pre><code>const raw = createLarkChannel({
+  appId: options.appId,
+  appSecret: options.appSecret,
+  loggerLevel,
+  policy: { requireMention: options.requireMention, dmMode: "open" },
+  includeRawEvent: true,                        // 带上原始事件（归一化时兜底）
+  safety: { chatQueue: { enabled: false } },    // ★ 关闭 SDK 内部 chat 队列
+}) as unknown as RawLarkChannel;</code></pre>
+
+      <div class="callout danger">
+        <div class="callout-title">⚠️ 为什么关闭 SDK 的 chatQueue？</div>
+        <p>飞书 SDK 内部默认对同一个 chat 的消息串行处理（防止并发发消息）。
+        但本项目自己实现了<strong>每会话队列</strong>（PromptQueue），且需要「卡片动作」和「消息」并行处理。
+        如果开着 SDK 的 queue，<strong>权限确认卡片可能被消息阻塞</strong>，导致确认迟迟无法响应。
+        所以关掉它，用自己的队列——这是设计文档里明确写过的坑。</p>
+      </div>
+
+      <h3>2.2 归一化：把 SDK 的怪类型翻译成自己的类型</h3>
+      <p>飞书 SDK 事件字段名混乱（既有 <code>message_id</code> 又有 <code>messageId</code>），
+      所以 channel.ts 里有一堆 <code>readString</code> / <code>normalizeMessage</code> / <code>normalizeCardAction</code>：</p>
+<pre><code>function normalizeMessage(value: unknown): FeishuMessage {
+  const record = asRecord(value);
+  // 兼容两种命名：rawContentType / messageType、chat_id / chatId ...
+  return {
+    messageId: readString(record, "messageId") ?? readString(record, "message_id") ?? "",
+    chatType: chatTypeText === "p2p" || chatTypeText === "private" ? "private" : "group",
+    ...
+  };
+}</code></pre>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 教学要点</div>
+        <p>对接外部 SDK 时，先做一次「归一化」，<strong>把外部世界的混乱挡在边界外</strong>。
+        下游所有模块只依赖 <code>FeishuMessage</code> 这一种干净的类型。</p>
+      </div>
+
+      <h2>3. 发送方法</h2>
+<pre><code>async sendText(chatId, text, replyOptions) {
+  return normalizeSendResult(await raw.send(chatId, { text }, replyOptions));
+}
+async sendMarkdown(chatId, markdown, replyOptions) {
+  return normalizeSendResult(await raw.send(chatId, { markdown }, replyOptions));
+}
+async sendCard(chatId, card, replyOptions) {
+  return normalizeSendResult(await raw.send(chatId, { card }, replyOptions));
+}</code></pre>
+
+      <p>三个方法都调用同一个 <code>raw.send</code>，只是 content 类型不同。飞书 SDK 根据内容结构区分文本/markdown/卡片。</p>
+
+      <h2>4. 流式输出</h2>
+<pre><code>async streamMarkdown(chatId, producer, replyOptions) {
+  await raw.stream(chatId, { markdown: producer }, replyOptions);
+}</code></pre>
+
+      <p>这是飞书 SDK 提供的<strong>流式能力</strong>：<code>producer</code> 是一个回调，SDK 反复调用它拿增量内容，实时更新消息。
+      stream-renderer 就是往里喂增量的生产者。</p>
+
+      <h2>5. 更新卡片：两种方式</h2>
+<pre><code>async updateCard(messageId, card) {
+  await raw.updateCard(messageId, card);
+}
+async updateCardByToken(token, card) {
+  await raw.rawClient.request({
+    url: "/open-apis/interactive/v1/card/update",
+    method: "POST",
+    data: { token, card },
+  });
+}</code></pre>
+
+      <ul>
+        <li>消息 ID 方式：在自己发的卡片上用（任务状态卡）</li>
+        <li>Token 方式：<strong>卡片回调事件自带 token</strong>，适合「按钮点击后原地更新这张卡」</li>
+      </ul>
+
+      <h2>6. 文件与附件</h2>
+<pre><code>async sendFile(chatId, filePath, fileName) {
+  const statResult = await stat(filePath);
+  if (!statResult.isFile()) throw new Error("Path is not a file");
+  await raw.send(chatId, { file: { source: filePath, fileName: fileName ?? basename(filePath) } });
+}
+
+async downloadResource(messageId, fileKey, type) {
+  const response = await raw.rawClient.im.v1.messageResource.get({
+    path: { message_id: messageId, file_key: fileKey },
+    params: { type },
+  });
+  const chunks: Buffer[] = [];
+  for await (const chunk of response.getReadableStream()) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);   // 可读流全部读成 Buffer
+}</code></pre>
+
+      <p>发送前校验「路径必须是文件」，把错误挡在 SDK 调用之前；下载资源返回 <code>Buffer</code>，交给附件处理器统一处理。</p>
+
+      <h2>7. context.ts：飞书运行上下文</h2>
+<pre><code>import { AsyncLocalStorage } from "node:async_hooks";
+
+const storage = new AsyncLocalStorage&lt;FeishuRunContext&gt;();
+
+export function getFeishuContext(): FeishuRunContext | undefined {
+  return storage.getStore();
+}
+
+export async function runWithFeishuContext&lt;T&gt;(context: FeishuRunContext, run: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt; {
+  return await storage.run(context, run);
+}</code></pre>
+
+      <p>它是 bridge 层与 tools 层之间的「暗通道」——<strong>不通过函数参数传值，通过异步上下文传值</strong>。
+      全文件只有 13 行，却是全项目最魔法也最重要的设计之一。</p>
+
+      <h2>8. webhook.ts：占位实现</h2>
+<pre><code>export function createWebhookNotImplementedError(): Error {
+  return new Error("Feishu webhook transport is not implemented yet; use websocket transport.");
+}</code></pre>
+
+      <p>整个文件只有这一个函数。设计文档规划了 webhook 能力（验签、解密、URL challenge），但 MVP 用 WebSocket 就够了。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 教学点：占位比空壳好</div>
+        <p>用一个语义明确的错误函数占位，让未来的实现者知道「这里要做什么、为什么还没做」，比注释强。</p>
+      </div>
+
+      <h2>9. 为什么 channel 用工厂函数而不是类</h2>
+<pre><code>export function createFeishuChannel(options: CreateFeishuChannelOptions): FeishuChannel { ... }</code></pre>
+
+      <ul>
+        <li>返回<strong>接口类型</strong> <code>FeishuChannel</code>，调用方只见接口</li>
+        <li>内部用闭包持有 <code>raw</code>、<code>connected</code>，比类的 private 更彻底（外部完全无法触碰）</li>
+        <li>测试时可以传入任何满足接口的 mock</li>
+      </ul>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <table>
+          <tr><th>子模块</th><th>职责</th><th>教学要点</th></tr>
+          <tr><td>channel.ts</td><td>SDK 封装 + 类型归一化</td><td>外部世界混乱 → 边界处翻译成干净类型</td></tr>
+          <tr><td>context.ts</td><td>运行上下文</td><td>AsyncLocalStorage 暗通道</td></tr>
+          <tr><td>webhook.ts</td><td>占位</td><td>语义化占位 &gt; 空壳</td></tr>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>如果飞书 SDK 突然把 <code>chat_id</code> 改名成 <code>chatId</code>，我们的代码会不会受影响？为什么？</li>
+          <li>为什么 <code>downloadResource</code> 要把流全部读成 Buffer 再返回？直接返回流行不行？（提示：附件处理器要判断大小和内容）</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

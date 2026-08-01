@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>02 架构亮点与设计模式 · pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="interview" data-chapter="02-patterns.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第三部分 · 面试准备</span>
+        <h1>02 架构亮点与设计模式</h1>
+        <p>面试官真正关心的不是用了多少模式，而是你能不能把问题、方案和取舍讲清楚。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">表达原则</div>
+        <p>不要说“我用了某某设计模式”。先说问题，再说为什么普通写法会出错，最后说当前设计如何限制复杂度。</p>
+      </div>
+
+      <h2>亮点总览</h2>
+      <table>
+        <tr><th>亮点</th><th>解决的问题</th><th>面试价值</th></tr>
+        <tr><td>会话级 runtime</td><td>飞书多用户映射到 Pi 单会话模型</td><td>系统边界和状态隔离</td></tr>
+        <tr><td>per-session queue</td><td>同会话串行，不同会话并行</td><td>并发控制粒度</td></tr>
+        <tr><td>远程 UI 桥接</td><td>Pi confirm/select 迁移到飞书卡片</td><td>异步交互建模</td></tr>
+        <tr><td>AsyncLocalStorage</td><td>工具调用拿到当前飞书上下文</td><td>上下文传播</td></tr>
+        <tr><td>受控文件回传</td><td>模型生成文件安全发回飞书</td><td>安全边界</td></tr>
+        <tr><td>按需 skill 加载</td><td>扩展飞书能力但避免工具膨胀</td><td>可扩展性和上下文成本</td></tr>
+      </table>
+
+      <h2>1. 会话级 runtime</h2>
+      <h3>问题</h3>
+      <p>飞书里同一时间可能有多个私聊和多个群聊，而 Pi runtime 更接近一个本地会话。如果共用一个 runtime，上下文、停止操作、权限确认和流式输出都会混在一起。</p>
+      <h3>方案</h3>
+      <p>按 <code>sessionKey</code> 创建 <code>SessionHost</code>，每个 host 拥有独立 runtime、queue、activeRun。</p>
+      <h3>面试话术</h3>
+      <p>“我没有把飞书消息直接丢给一个全局 Agent，而是先把飞书世界里的用户和群映射成会话 key。每个 key 都是一个隔离单元，这样状态管理和并发控制可以统一收敛到 SessionHost。”</p>
+
+      <h2>2. per-session queue</h2>
+      <h3>问题</h3>
+      <p>同一会话里两条消息并发执行会写乱上下文；但如果用全局锁，一个群里的长回复会阻塞所有人。</p>
+      <h3>方案</h3>
+      <p>每个 SessionHost 内维护一个 <code>PromptQueue</code>。同 key 串行，不同 key 并行。</p>
+      <h3>面试话术</h3>
+      <p>“锁的粒度等于隔离的粒度。同一个会话必须串行，因为上下文是顺序敏感的；不同会话必须并行，否则远程 Agent 会变成单线程客服。”</p>
+
+      <h2>3. 远程 UI 桥接</h2>
+      <h3>问题</h3>
+      <p>Pi 的权限确认原本发生在本地 UI，但飞书用户在手机上，不能回到终端点确认。</p>
+      <h3>方案</h3>
+      <p>把 <code>ExtensionUIContext.confirm/select</code> 转成飞书交互卡片。卡片发出时登记 pending dialog，用户点击后 resolve 对应 Promise。</p>
+      <h3>面试话术</h3>
+      <p>“我把远程按钮点击建模成本地 Promise 的完成。Pi 侧仍然像等待 UI 一样写逻辑，但真实交互已经换成飞书卡片。”</p>
+
+      <h2>4. AsyncLocalStorage 上下文传播</h2>
+      <h3>问题</h3>
+      <p>模型调用 <code>send_file_to_chat</code> 时，工具函数并没有显式收到 chatId，但它必须知道文件要发回哪个飞书会话。</p>
+      <h3>方案</h3>
+      <p>在 RuntimeHost 执行 prompt 时用 <code>AsyncLocalStorage.run</code> 注入当前飞书上下文，工具内部再读取。</p>
+      <h3>面试话术</h3>
+      <p>“我没有把 chatId 暴露给模型参数，也没有用全局变量，而是用异步上下文传播。它和一次请求绑定，可以天然适配并发场景。”</p>
+
+      <h2>5. 受控文件回传</h2>
+      <h3>问题</h3>
+      <p>Agent 可能生成图片、报告、压缩包等文件，但模型输出的路径不能被完全信任。</p>
+      <h3>方案</h3>
+      <p><code>send_file_to_chat</code> 只允许发送白名单目录下、大小合规、确认为文件的路径。发送目标来自当前飞书上下文，而不是模型自己指定。</p>
+      <h3>面试话术</h3>
+      <p>“我把模型也当作不可信输入处理。文件路径由模型提供，但发送范围由配置和运行时上下文限制。”</p>
+
+      <h2>6. 按需 skill 加载</h2>
+      <h3>问题</h3>
+      <p>飞书 CLI 能力很多，如果全部变成常驻工具，会增加上下文体积，也可能让模型绕过桥接服务重复发送消息。</p>
+      <h3>方案</h3>
+      <p>只有检测到 <code>lark-cli</code> 已安装时才加载 <code>lark-doc-cli</code> 和 <code>lark-im-readonly</code> skills，并通过提示词和命令 guard 禁止 IM 写操作。</p>
+      <h3>面试话术</h3>
+      <p>“skill 是知识和工作流，tool 是可调用能力。v1 让文档和只读查询通过 skill 按需出现，但 IM 写入仍然收敛到桥接层，避免重复发送。”</p>
+
+      <h2>设计模式对应表</h2>
+      <table>
+        <tr><th>模式或范式</th><th>项目位置</th><th>不要生硬背诵，应该这样讲</th></tr>
+        <tr><td>Facade</td><td><code>RuntimeHost</code></td><td>封装 Pi SDK 初始化、prompt、abort、清理</td></tr>
+        <tr><td>Strategy</td><td><code>buildSessionKey</code></td><td>群聊共享和按人隔离由配置决定</td></tr>
+        <tr><td>Adapter</td><td><code>FeishuChannel</code>、<code>createFeishuUIContext</code></td><td>把飞书 SDK 和 Pi UI 接口互相适配</td></tr>
+        <tr><td>Observer</td><td><code>stream-renderer</code></td><td>订阅 Pi session 事件并渲染为飞书输出</td></tr>
+        <tr><td>Composition Root</td><td><code>bin/pi-remote-feishu.ts</code></td><td>依赖在入口集中装配，业务层只依赖接口</td></tr>
+        <tr><td>Defensive Programming</td><td><code>send-file-to-chat</code>、附件处理</td><td>外部消息和模型输出都要校验</td></tr>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">本节小结</div>
+        <p>真正值得重点讲的是前四个亮点：会话级 runtime、per-session queue、远程 UI 桥接、AsyncLocalStorage。它们能体现你对并发、状态和边界的理解。</p>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>

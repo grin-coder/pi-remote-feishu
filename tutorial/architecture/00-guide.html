@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>00 教程导读 — pi-feishu 源码教程</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body data-part="architecture" data-chapter="00-guide.html">
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="overlay" id="overlay"></div>
+  <main class="content">
+    <div class="content-top">
+      <button class="menu-btn" id="menu-btn" aria-label="菜单">☰</button>
+      <nav class="breadcrumb" id="breadcrumb"></nav>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+    </div>
+
+    <article>
+      <header class="hero">
+        <span class="part-tag">第一部分 · 架构设计</span>
+        <h1>00 教程导读</h1>
+        <p>先花 3 分钟搞清楚：这个教程讲什么、你需要准备什么、该怎么学效果最好。</p>
+      </header>
+
+      <div class="callout note">
+        <div class="callout-title">🎯 本节目标</div>
+        <ul>
+          <li>知道这个教程讲的是什么、怎么用</li>
+          <li>准备好学习环境（克隆项目 + 装依赖）</li>
+          <li>理解整个教程的结构和阅读顺序</li>
+        </ul>
+      </div>
+
+      <h2>1. 这个教程是什么</h2>
+      <p>一句话：<strong>带你从零读懂 <code>pi-feishu</code> 这个开源项目的源码</strong>。</p>
+      <p><code>pi-feishu</code> 是 AI 编码代理 <strong>Pi Agent</strong> 的飞书（Feishu/Lark）扩展包。
+      它让用户可以在飞书私聊/群聊里跟 Pi 对话，并把 Pi 的回复、思考过程、工具调用、生成的文件全部投射回飞书。</p>
+      <p>这个项目虽然只有约 2800 行 TypeScript，却包含了大量值得学习的设计：
+      多会话隔离、双进程架构、异步上下文传递、流式渲染、远程 UI 桥接、文件安全校验……</p>
+
+      <h2>2. 你需要准备什么</h2>
+      <table>
+        <tr><th>前置条件</th><th>说明</th></tr>
+        <tr><td>Node.js ≥ 22.19</td><td>项目引擎要求（package.json 的 engines 字段）</td></tr>
+        <tr><td>TypeScript 基础</td><td>会看接口、泛型、类型联合即可，教程会解释关键语法</td></tr>
+        <tr><td>一个编辑器</td><td>推荐 VS Code，边读教程边打开源码对照</td></tr>
+        <tr><td>飞书应用（可选）</td><td>想真正跑起来需要注册飞书开放平台应用；只想学原理不需要</td></tr>
+      </table>
+
+      <h2>3. 跟着做：先把这个项目跑起来</h2>
+      <p>教程里的所有内容都基于真实源码，建议先克隆并确认它能通过测试：</p>
+<pre><code># 克隆项目
+git clone https://github.com/your-name/pi-feishu-extension.git
+cd pi-feishu-extension
+
+# 安装依赖
+npm install
+
+# 跑测试（16 个测试应该全部通过）
+npm test
+
+# 类型检查
+npm run typecheck
+
+# 编译
+npm run build</code></pre>
+      <p>看到 <code>Test Files 8 passed / Tests 16 passed</code> 就说明环境 OK 了。</p>
+
+      <div class="callout tip">
+        <div class="callout-title">💡 没有飞书应用也能学</div>
+        <p>本教程 90% 的内容是<strong>架构与实现原理</strong>，不需要真实飞书环境。
+        只有想实际部署时才需要去飞书开放平台注册应用、配置 WebSocket 长连接。</p>
+      </div>
+
+      <h2>4. 教程结构</h2>
+      <table>
+        <tr><th>部分</th><th>章节</th><th>学完你会掌握</th></tr>
+        <tr>
+          <td><strong>第一部分 架构设计</strong></td>
+          <td>导读 → 项目概览 → 总体架构 → 核心概念 → 消息处理全链路 → 关键设计决策</td>
+          <td>项目解决什么问题、系统怎么分层、sessionKey/SessionHost/PromptQueue/异步上下文、一条消息的完整旅程、13 个设计决策的取舍</td>
+        </tr>
+        <tr>
+          <td><strong>第二部分 源码解读</strong></td>
+          <td>源码地图 → 配置 → 通道 → 路由 → 会话 → 运行时 → 渲染 → UI 桥接 → 卡片 → 附件 → 工具 → 存储 → 入口 → 测试与二次开发</td>
+          <td>每个源码模块的逐行讲解、可复用的编码范式、如何给项目加新功能</td>
+        </tr>
+      </table>
+
+      <h2>5. 每章的标准结构</h2>
+      <ol>
+        <li><strong>🎯 本节目标</strong>：先告诉你学完能获得什么</li>
+        <li><strong>📂 本节源码</strong>：要对照阅读的文件路径</li>
+        <li><strong>正文</strong>：概念讲解 + 代码精读 + 流程图</li>
+        <li><strong>💡 提示 / ⚠️ 注意</strong>：容易踩的坑和设计意图</li>
+        <li><strong>🧾 小结</strong>：一页纸总结本节要点</li>
+        <li><strong>✍️ 练习</strong>：动手题，答案都在源码里</li>
+      </ol>
+
+      <h2>6. 最佳学习方式</h2>
+      <div class="callout note">
+        <div class="callout-title">📖 推荐路径</div>
+        <ol>
+          <li><strong>第一遍（快速）</strong>：只读第一部分，30 分钟内建立全局认知。</li>
+          <li><strong>第二遍（精读）</strong>：读第二部分时，每章先在编辑器打开对应文件，对照代码逐段理解。</li>
+          <li><strong>第三遍（动手）</strong>：做完每章练习，尝试按第 14 章的指南加一个新命令/新工具。</li>
+        </ol>
+      </div>
+
+      <h2>7. 术语速览（提前打个预防针）</h2>
+      <table>
+        <tr><th>术语</th><th>含义</th></tr>
+        <tr><td>Transport</td><td>传输通道，本项目中指「飞书」这条与用户对话的通道</td></tr>
+        <tr><td>Runtime</td><td>Pi Agent 的会话运行时（<code>AgentSessionRuntime</code>），持有模型和上下文</td></tr>
+        <tr><td>sessionKey</td><td>会话的唯一标识字符串，如 <code>dm:ou_xxx</code>、<code>group:oc_xxx</code></td></tr>
+        <tr><td>SessionHost</td><td>一个隔离单元：一个 runtime + 一个串行队列 + 活跃任务标记</td></tr>
+        <tr><td>AsyncLocalStorage</td><td>Node 官方 API，用于在异步调用链里传递「当前请求上下文」</td></tr>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">✅ 本节小结</div>
+        <p>你已经知道：教程讲什么、需要什么环境、怎么学最快。
+        下一步克隆项目并跑通测试，然后进入 <strong>01 项目概览</strong>。</p>
+      </div>
+
+      <div class="callout warn">
+        <div class="callout-title">✍️ 练习</div>
+        <ol>
+          <li>打开 <code>package.json</code>，找出这个包对外暴露的入口文件（<code>main</code>、<code>bin</code>、<code>pi.extensions</code> 三个字段分别指向哪里？）</li>
+          <li>运行 <code>npm test</code>，数一数一共多少个测试文件、多少个用例。</li>
+        </ol>
+      </div>
+    </article>
+
+    <footer class="page-nav" id="page-nav"></footer>
+  </main>
+</div>
+<button class="back-top" id="back-top" aria-label="回到顶部">↑</button>
+<script src="../assets/nav.js"></script>
+<script src="../assets/main.js"></script>
+</body>
+</html>
