@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>13 入口与扩展 — pi-feishu 源码教程</title>
+<title>13 入口与扩展 — pi-remote-feishu 源码教程</title>
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body data-part="source" data-chapter="13-bin-extensions.html">
@@ -35,11 +35,11 @@
 
       <div class="callout note">
         <div class="callout-title">📂 本节源码</div>
-        <p><span class="file-path">src/bin/pi-feishu.ts</span>（131 行）<br>
+        <p><span class="file-path">src/bin/pi-remote-feishu.ts</span>（131 行）<br>
         <span class="file-path">src/extensions/index.ts</span>（22 行）</p>
       </div>
 
-      <h2>1. Transport Host 启动（src/bin/pi-feishu.ts）</h2>
+      <h2>1. Transport Host 启动（src/bin/pi-remote-feishu.ts）</h2>
 
       <h3>1.1 参数解析</h3>
 <pre><code>function parseArgs(args: string[]): CliOptions {
@@ -117,7 +117,7 @@ export default function feishuExtension(pi: ExtensionAPI): void {
   pi.registerCommand("feishu", {
     description: "Show Feishu extension status",
     handler: async (_args, ctx) =&gt; {
-      ctx.ui.notify("Feishu extension is loaded. Start the transport with `pi-feishu serve`.", "info");
+      ctx.ui.notify("Feishu extension is loaded. Start the transport with `pi-remote-feishu serve`.", "info");
     },
   });
 
@@ -137,8 +137,8 @@ export default function feishuExtension(pi: ExtensionAPI): void {
 
       <h3>2.2 package.json 的接线</h3>
 <pre><code>{
-  "name": "pi-feishu",
-  "bin": { "pi-feishu": "./dist/bin/pi-feishu.js" },
+  "name": "pi-remote-feishu",
+  "bin": { "pi-remote-feishu": "./dist/bin/pi-remote-feishu.js" },
   "pi": { "extensions": ["./dist/extensions/index.js"] },
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
@@ -147,7 +147,7 @@ export default function feishuExtension(pi: ExtensionAPI): void {
 }</code></pre>
 
       <ul>
-        <li><code>bin</code>：让 <code>pi-feishu serve</code> 命令可用</li>
+        <li><code>bin</code>：让 <code>pi-remote-feishu serve</code> 命令可用</li>
         <li><code>pi.extensions</code>：告诉 Pi 包管理器加载扩展</li>
         <li><code>exports</code>：包的双入口（主入口 + extension 入口）</li>
       </ul>
@@ -159,7 +159,7 @@ export default function feishuExtension(pi: ExtensionAPI): void {
 │  → 注册 /feishu 命令 + send_file_to_chat 工具    │
 └─────────────────────────────────────────────────┘
 
-┌─ 你启动 pi-feishu serve（另一进程）─────────────┐
+┌─ 你启动 pi-remote-feishu serve（另一进程）─────────────┐
 │  → 连接飞书 WebSocket                           │
 │  → 收到消息 → SessionHostManager → RuntimeHost  │
 │  → 每个 runtime 创建时也注册 send_file_to_chat   │

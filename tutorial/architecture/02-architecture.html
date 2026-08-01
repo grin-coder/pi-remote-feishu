@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>02 总体架构 — pi-feishu 源码教程</title>
+<title>02 总体架构 — pi-remote-feishu 源码教程</title>
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body data-part="architecture" data-chapter="02-architecture.html">
@@ -38,7 +38,7 @@
 │  用户发消息 / 点卡片按钮                                                │
 └──────────────────────────────────┬───────────────────────────────────┘
                                    ▼
-┌───────────────────── Transport Host 进程（pi-feishu serve）──────────┐
+┌───────────────────── Transport Host 进程（pi-remote-feishu serve）──────────┐
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │ src/feishu/channel.ts                                         │  │
 │  │   createFeishuChannel() 封装飞书 SDK                            │  │
@@ -84,7 +84,7 @@
       <p>整个系统按「谁依赖谁」分成四层。这个分层是理解代码组织方式的关键：</p>
 
 <pre><code>┌─ Layer 4: 应用层（组合一切）
-│    bin/pi-feishu.ts          把 config/channel/store/manager 组装起来
+│    bin/pi-remote-feishu.ts          把 config/channel/store/manager 组装起来
 │    extensions/index.ts       把工具注册给 Pi
 ├─ Layer 3: 桥接层 bridge/ ★ 核心
 │    message-handler 编排 / conversation-router / message-normalizer
@@ -107,7 +107,7 @@
 
       <h2>3. 两个进程的启动路径</h2>
 
-      <h3>3.1 Transport Host 启动（src/bin/pi-feishu.ts）</h3>
+      <h3>3.1 Transport Host 启动（src/bin/pi-remote-feishu.ts）</h3>
 <pre><code>async function main() {
   const cli = parseArgs(process.argv.slice(2));        // ① 解析 CLI 参数
   const config = loadConfig(cli.config);               // ② 合并配置（env &lt; 文件 &lt; CLI）
@@ -241,7 +241,7 @@
         <div class="callout-title">✍️ 练习</div>
         <ol>
           <li>打开 <code>src/types.ts</code>，找找有没有第 5 个「隐藏的核心类型」？提示：它是工具和权限确认都依赖的东西。</li>
-          <li>在 <code>src/bin/pi-feishu.ts</code> 里，如果把 <code>channel.onMessage</code> 移到 <code>channel.connect()</code> 之后会发生什么？为什么作者先注册回调？</li>
+          <li>在 <code>src/bin/pi-remote-feishu.ts</code> 里，如果把 <code>channel.onMessage</code> 移到 <code>channel.connect()</code> 之后会发生什么？为什么作者先注册回调？</li>
         </ol>
       </div>
     </article>

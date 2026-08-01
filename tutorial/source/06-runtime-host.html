@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>06 运行时封装 — pi-feishu 源码教程</title>
+<title>06 运行时封装 — pi-remote-feishu 源码教程</title>
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body data-part="source" data-chapter="06-runtime-host.html">
@@ -72,7 +72,7 @@
       agentDir: runtimeAgentDir,
       resourceLoaderOptions: {
         extensionFactories: [{
-          name: "pi-feishu-runtime",
+          name: "pi-remote-feishu-runtime",
           hidden: true,
           factory(pi) {
             pi.registerTool(createSendFileToChatTool(options.config));   // ③ 注入发文件工具

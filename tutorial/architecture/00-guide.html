@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>00 教程导读 — pi-feishu 源码教程</title>
+<title>00 教程导读 — pi-remote-feishu 源码教程</title>
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body data-part="architecture" data-chapter="00-guide.html">
@@ -34,8 +34,8 @@
       </div>
 
       <h2>1. 这个教程是什么</h2>
-      <p>一句话：<strong>带你从零读懂 <code>pi-feishu</code> 这个开源项目的源码</strong>。</p>
-      <p><code>pi-feishu</code> 是 AI 编码代理 <strong>Pi Agent</strong> 的飞书（Feishu/Lark）扩展包。
+      <p>一句话：<strong>带你从零读懂 <code>pi-remote-feishu</code> 这个开源项目的源码</strong>。</p>
+      <p><code>pi-remote-feishu</code> 是 AI 编码代理 <strong>Pi Agent</strong> 的飞书（Feishu/Lark）扩展包。
       它让用户可以在飞书私聊/群聊里跟 Pi 对话，并把 Pi 的回复、思考过程、工具调用、生成的文件全部投射回飞书。</p>
       <p>这个项目虽然只有约 2800 行 TypeScript，却包含了大量值得学习的设计：
       多会话隔离、双进程架构、异步上下文传递、流式渲染、远程 UI 桥接、文件安全校验……</p>
@@ -52,8 +52,8 @@
       <h2>3. 跟着做：先把这个项目跑起来</h2>
       <p>教程里的所有内容都基于真实源码，建议先克隆并确认它能通过测试：</p>
 <pre><code># 克隆项目
-git clone https://github.com/your-name/pi-feishu-extension.git
-cd pi-feishu-extension
+git clone https://github.com/your-name/pi-remote-feishu-extension.git
+cd pi-remote-feishu-extension
 
 # 安装依赖
 npm install

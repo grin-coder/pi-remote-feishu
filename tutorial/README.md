@@ -1,6 +1,6 @@
-# pi-feishu 源码教程 📚
+# pi-remote-feishu 源码教程 📚
 
-从零读懂 **Pi Agent × 飞书** 扩展包 `pi-feishu` 的完整实现。
+从零读懂 **Pi Agent × 飞书** 扩展包 `pi-remote-feishu` 的完整实现。
 
 > 💡 **本教程用纯原生 HTML 构建**，没有框架、没有构建步骤、不需要网络。
 > 直接点击 [index.html](./index.html) 就能在 GitHub 上预览完整教程。

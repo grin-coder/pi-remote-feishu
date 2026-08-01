@@ -80,4 +80,4 @@ pi-remote-feishu help                     # 查看帮助
 - [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) — 设计文档（中文）
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — 设计文档（English）
 - [`docs/`](./docs/00-README.md) — 源码精读文档
-- [`tutorial/`](./tutorial/index.html) — HTML 教程站（24 章）
+- [📖 在线教程](https://grin-coder.github.io/pi-remote-feishu/) — HTML 教程站（24 章）

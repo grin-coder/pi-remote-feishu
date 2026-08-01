@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>01 项目概览 — pi-feishu 源码教程</title>
+<title>01 项目概览 — pi-remote-feishu 源码教程</title>
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body data-part="architecture" data-chapter="01-overview.html">
@@ -38,7 +38,7 @@
       用户在飞书私聊/群聊里发消息，Pi 在服务器上干活，把思考过程、工具调用、生成的文件全部投射回飞书。</p>
 
 <pre><code>┌─────────────────┐        ┌───────────────────────┐        ┌──────────────┐
-│  飞书 App       │  ◄────► │  pi-feishu 服务进程    │  ◄────► │  Pi Agent    │
+│  飞书 App       │  ◄────► │  pi-remote-feishu 服务进程    │  ◄────► │  Pi Agent    │
 │  (私聊/群聊)     │  WebSocket│ (transport host)      │   SDK   │  (runtime)   │
 └─────────────────┘        └───────────────────────┘        └──────────────┘</code></pre>
 
@@ -86,7 +86,7 @@
 
       <table>
         <tr><th></th><th>Transport Host（传输服务进程）</th><th>Pi Extension（Pi 扩展）</th></tr>
-        <tr><td>入口</td><td><code>src/bin/pi-feishu.ts</code>，命令 <code>pi-feishu serve</code></td><td><code>src/extensions/index.ts</code></td></tr>
+        <tr><td>入口</td><td><code>src/bin/pi-remote-feishu.ts</code>，命令 <code>pi-remote-feishu serve</code></td><td><code>src/extensions/index.ts</code></td></tr>
         <tr><td>运行方式</td><td>长期运行的长连接进程</td><td>被 Pi 自己加载（<code>package.json</code> 的 <code>pi.extensions</code> 字段）</td></tr>
         <tr><td>职责</td><td>连接飞书 WebSocket、接收消息、处理卡片、维护会话、调用 Pi runtime</td><td>注册工具（<code>send_file_to_chat</code>）、注册 <code>/feishu</code> 命令、注入 prompt 指引</td></tr>
         <tr><td>会不会打开飞书连接</td><td>会（这是它的本分）</td><td><strong>不会</strong></td></tr>
@@ -98,7 +98,7 @@
       <h2>4. 源码目录结构</h2>
 <pre><code>src/
 ├── bin/
-│   └── pi-feishu.ts          # CLI 入口：解析参数、组装组件、启动服务
+│   └── pi-remote-feishu.ts          # CLI 入口：解析参数、组装组件、启动服务
 ├── config/
 │   ├── schema.ts             # 配置的类型解析/合并/默认值
 │   └── load-config.ts        # 配置加载：env &lt; 文件 &lt; CLI
@@ -167,7 +167,7 @@
         <ul>
           <li>这是一个 <strong>transport 扩展包</strong>：不改 Pi 核心，把飞书接进来</li>
           <li>核心难题：<strong>飞书多用户并发 vs Pi 单 session 模型</strong>，用 SessionHostManager 解决</li>
-          <li>两个进程：<code>pi-feishu serve</code>（传输）+ Pi extension（能力注册）</li>
+          <li>两个进程：<code>pi-remote-feishu serve</code>（传输）+ Pi extension（能力注册）</li>
           <li><code>src/types.ts</code> 是全部类型的地基，建议最先读</li>
         </ul>
       </div>

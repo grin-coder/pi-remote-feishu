@@ -80,4 +80,4 @@ Group chats require mentioning the bot (`@bot`) by default.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — design document (English)
 - [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) — design document (中文)
 - [`docs/`](./docs/00-README.md) — in-depth source code walkthrough
-- [`tutorial/`](./tutorial/index.html) — HTML tutorial site (24 chapters)
+- [📖 Online tutorial](https://grin-coder.github.io/pi-remote-feishu/) — HTML tutorial site (24 chapters)

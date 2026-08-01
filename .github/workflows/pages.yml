@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # 把 tutorial/ 的内容拷到 _site 作为站点根（相对链接保持不变）
       - name: Prepare tutorial as site root

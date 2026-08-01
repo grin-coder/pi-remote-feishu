@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>14 测试与二次开发 — pi-feishu 源码教程</title>
+<title>14 测试与二次开发 — pi-remote-feishu 源码教程</title>
 <link rel="stylesheet" href="../assets/style.css">
 </head>
 <body data-part="source" data-chapter="14-testing-extending.html">
@@ -42,7 +42,7 @@ npm test         // 跑 vitest 单元测试
 npm run build    // 编译到 dist/</code></pre>
 
       <p>启动服务：</p>
-<pre><code>FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx node dist/bin/pi-feishu.js serve</code></pre>
+<pre><code>FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx node dist/bin/pi-remote-feishu.js serve</code></pre>
 
       <h2>2. 测试体系</h2>
       <table>
@@ -153,7 +153,7 @@ async getHost(sessionKey, identity) {
 
       <h2>5. 部署注意点</h2>
       <ol>
-        <li><strong>长连接进程守护</strong>：用 pm2 / systemd 守护 <code>pi-feishu serve</code>，崩溃自动拉起</li>
+        <li><strong>长连接进程守护</strong>：用 pm2 / systemd 守护 <code>pi-remote-feishu serve</code>，崩溃自动拉起</li>
         <li><strong>凭证安全</strong>：appSecret 放环境变量或用户级配置，别进版本库</li>
         <li><strong>临时目录</strong>：确认 tempDir 可写、有清理策略</li>
         <li><strong>白名单</strong>：生产环境建议配置 <code>allowUsers</code> / <code>allowChats</code>，把 bot 限制在受控范围</li>
@@ -178,7 +178,7 @@ async getHost(sessionKey, identity) {
         </ol>
       </div>
 
-      <p class="index-footer">第二部分完。至此你已完整读过 pi-feishu 的架构与源码。祝你讲得明白、改得开心 🎉</p>
+      <p class="index-footer">第二部分完。至此你已完整读过 pi-remote-feishu 的架构与源码。祝你讲得明白、改得开心 🎉</p>
     </article>
 
     <footer class="page-nav" id="page-nav"></footer>

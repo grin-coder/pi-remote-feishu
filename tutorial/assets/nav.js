@@ -1,5 +1,5 @@
 window.TUTORIAL = {
-  title: "pi-feishu 源码教程",
+  title: "pi-remote-feishu 源码教程",
   subtitle: "从零读懂 Pi Agent × 飞书扩展",
   parts: [
     {
