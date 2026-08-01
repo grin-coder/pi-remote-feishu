@@ -1,0 +1,47 @@
+# ============================================================
+# 部署 HTML 教程到 GitHub Pages
+# ------------------------------------------------------------
+# 触发：push 到 main 分支，或手动 workflow_dispatch
+# 效果：把 tutorial/ 目录内容作为站点根目录发布，
+#       URL: https://grin-coder.github.io/pi-remote-feishu/
+# ============================================================
+name: Deploy tutorial to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 把 tutorial/ 的内容拷到 _site 作为站点根（相对链接保持不变）
+      - name: Prepare tutorial as site root
+        run: |
+          mkdir -p _site
+          cp -r tutorial/* _site/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
