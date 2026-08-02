@@ -19,12 +19,39 @@
 
 ## 快速开始
 
+有两种方式：**直接使用 npm 已发布包**（推荐，装完即可用），或**从源码构建**（适合二次开发）。
+
+### 方式一：使用 npm 已发布包（推荐）
+
+```bash
+# 1. 安装已发布的包（作为 Pi 包安装，自动注册扩展，并提供 pi-remote-feishu 命令）
+pi install npm:pi-remote-feishu
+
+# 2. 生成配置模板（把 <你的Pi项目路径> 换成你的 Pi 工作目录）
+pi-remote-feishu init --cwd <你的Pi项目路径>
+
+# 3. 编辑生成的配置：.pi/feishu.json
+#    - 填入你的飞书 appId / appSecret
+#    - 按需调整 policy / sessions / rendering 等选项
+
+# 4. 启动桥接
+pi-remote-feishu serve --cwd <你的Pi项目路径>
+```
+
+如果只想用命令行工具、不注册 Pi 扩展，也可以全局安装 npm 包：
+
+```bash
+npm install -g pi-remote-feishu
+```
+
+### 方式二：从源码构建（开发/贡献）
+
 ```bash
 # 1. 安装并构建
 npm install --ignore-scripts
 npm run build
 
-# 2. 生成配置模板（把 <你的Pi项目路径> 换成你的 Pi 工作目录）
+# 2. 生成配置模板
 node dist/bin/pi-remote-feishu.js init --cwd <你的Pi项目路径>
 
 # 3. 编辑生成的配置：.pi/feishu.json
@@ -35,12 +62,14 @@ node dist/bin/pi-remote-feishu.js init --cwd <你的Pi项目路径>
 node dist/bin/pi-remote-feishu.js serve --cwd <你的Pi项目路径>
 ```
 
-也可以用环境变量传入凭据：
+### 环境变量方式
+
+两种方式都可以直接用环境变量传入凭据：
 
 ```bash
 export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET="xxx"
-node dist/bin/pi-remote-feishu.js serve --cwd <你的Pi项目路径>
+pi-remote-feishu serve --cwd <你的Pi项目路径>
 ```
 
 ## CLI 命令

@@ -19,12 +19,40 @@ This is an independent Pi extension. It does not modify Pi core.
 
 ## Quick Start
 
+There are two ways: **use the published npm package** (recommended — ready to go right after install) or **build from source** (for development / contributions).
+
+### Option 1: Published npm package (recommended)
+
+```bash
+# 1. Install the published package as a Pi package
+#    (registers the extension and provides the pi-remote-feishu command)
+pi install npm:pi-remote-feishu
+
+# 2. Create a config template (replace <your-pi-project> with your Pi working directory)
+pi-remote-feishu init --cwd <your-pi-project>
+
+# 3. Edit the generated config: .pi/feishu.json
+#    - put your Feishu appId / appSecret
+#    - adjust policy / sessions / rendering options
+
+# 4. Start the bridge
+pi-remote-feishu serve --cwd <your-pi-project>
+```
+
+If you only want the CLI tool (without registering the Pi extension), install the npm package globally instead:
+
+```bash
+npm install -g pi-remote-feishu
+```
+
+### Option 2: Build from source (development / contributions)
+
 ```bash
 # 1. Install and build
 npm install --ignore-scripts
 npm run build
 
-# 2. Create a config template (replace <your-pi-project> with your Pi working directory)
+# 2. Create a config template
 node dist/bin/pi-remote-feishu.js init --cwd <your-pi-project>
 
 # 3. Edit the generated config: .pi/feishu.json
@@ -35,12 +63,14 @@ node dist/bin/pi-remote-feishu.js init --cwd <your-pi-project>
 node dist/bin/pi-remote-feishu.js serve --cwd <your-pi-project>
 ```
 
-You can also pass credentials via environment variables:
+### Environment variables
+
+You can pass credentials via environment variables with either option:
 
 ```bash
 export FEISHU_APP_ID="cli_xxx"
 export FEISHU_APP_SECRET="xxx"
-node dist/bin/pi-remote-feishu.js serve --cwd <your-pi-project>
+pi-remote-feishu serve --cwd <your-pi-project>
 ```
 
 ## CLI Commands
